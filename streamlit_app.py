@@ -51,27 +51,31 @@ if st.button("Load Zotero Library"):
             
             for item in items:
                 # Skip if not a relevant item type
-                if item['meta']['itemType'] not in ['journalArticle', 'webpage', 'report', 'conferencePaper']:
+                # Fix: itemType is in item['data'], not item['meta']
+                if item['data']['itemType'] not in ['journalArticle', 'webpage', 'report', 'conferencePaper']:
                     continue
                 
                 # Extract metadata text
-                title = item['meta'].get('title', '')
-                abstract = item.get('abstractNote', '')
+                # Fix: These are also in item['data']
+                title = item['data'].get('title', '')
+                abstract = item['data'].get('abstractNote', '')
                 notes = []
                 
                 # Get child notes
                 children = zot.children(item['key'])
                 for child in children:
-                    if child['meta']['itemType'] == 'note':
-                        notes.append(child.get('note', ''))
+                    # Fix: Check itemType in child['data']
+                    if child['data']['itemType'] == 'note':
+                        notes.append(child['data'].get('note', ''))
                 
                 text = f"{title}\n{abstract}\n{' '.join(notes)}"
                 
                 # If there are attachments (e.g., PDF or snapshot)
                 for child in children:
-                    if child['meta']['itemType'] == 'attachment':
-                        link_mode = child.get('linkMode', '')
-                        if link_mode in ['attached_file', 'imported_file', 'imported_url']:
+                    if child['data']['itemType'] == 'attachment':
+                        # Fix: linkMode is also in child['data']
+                        link_mode = child['data'].get('linkMode', '')
+                        if link_mode in ['linked_file', 'imported_file', 'imported_url']:
                             # Get the file URL via API
                             file_url = f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
                             response = requests.get(file_url)
@@ -81,7 +85,6 @@ if st.button("Load Zotero Library"):
                                     pdf_text = extract_pdf_text(response.content)
                                     text += f"\n{pdf_text}"
                                 elif 'text/html' in content_type:  # For web snapshots
-                                    # Simple text extraction from HTML, could use BeautifulSoup for better
                                     text += f"\n{response.text}"
                 
                 if text.strip():
