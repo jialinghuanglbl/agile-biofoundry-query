@@ -1,0 +1,7 @@
+streamlit
+pyzotero
+scikit-learn
+numpy
+openai
+PyPDF2
+requests
