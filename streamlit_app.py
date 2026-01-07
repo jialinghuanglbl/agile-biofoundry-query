@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 from pyzotero import zotero
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -161,4 +160,3 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
     st.session_state.messages.append({"role": "assistant", "content": response})
     with st.chat_message("assistant"):
         st.markdown(response)
-```
