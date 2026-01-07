@@ -4,8 +4,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from openai import OpenAI
-
-client = OpenAI(api_key=openai_api_key)
 import PyPDF2
 import requests
 import io
@@ -32,6 +30,8 @@ zotero_library_type = st.secrets["zotero_library_type"]
 openai_api_key = st.secrets["openai_api_key"]
 zotero_collection_key = st.secrets.get("zotero_collection_key", "")  # Optional
 
+# Initialize OpenAI client AFTER loading the API key
+client = OpenAI(api_key=openai_api_key)
 
 # Button to load library
 if st.button("Load Zotero Library"):
@@ -52,12 +52,10 @@ if st.button("Load Zotero Library"):
 
             for item in items:
                 # Skip if not a relevant item type
-                # Fix: itemType is in item['data'], not item['meta']
                 if item['data']['itemType'] not in ['journalArticle', 'webpage', 'report', 'conferencePaper']:
                     continue
 
                 # Extract metadata text
-                # Fix: These are also in item['data']
                 title = item['data'].get('title', '')
                 abstract = item['data'].get('abstractNote', '')
                 notes = []
@@ -65,7 +63,6 @@ if st.button("Load Zotero Library"):
                 # Get child notes
                 children = zot.children(item['key'])
                 for child in children:
-                    # Fix: Check itemType in child['data']
                     if child['data']['itemType'] == 'note':
                         notes.append(child['data'].get('note', ''))
 
@@ -74,7 +71,6 @@ if st.button("Load Zotero Library"):
                 # If there are attachments (e.g., PDF or snapshot)
                 for child in children:
                     if child['data']['itemType'] == 'attachment':
-                        # Fix: linkMode is also in child['data']
                         link_mode = child['data'].get('linkMode', '')
                         if link_mode in ['linked_file', 'imported_file', 'imported_url']:
                             # Get the file URL via API
@@ -85,7 +81,7 @@ if st.button("Load Zotero Library"):
                                 if 'application/pdf' in content_type:
                                     pdf_text = extract_pdf_text(response.content)
                                     text += f"\n{pdf_text}"
-                                elif 'text/html' in content_type:  # For web snapshots
+                                elif 'text/html' in content_type:
                                     text += f"\n{response.text}"
 
                 if text.strip():
@@ -140,17 +136,19 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
             context = ""
             for idx in top_indices:
                 if similarities[idx] > 0.1:  # Threshold for relevance
-                    context += f"\n\nDocument ID: {st.session_state.doc_ids[idx]}\n{st.session_state.documents[idx][:1000]}..."  # Truncate to 1000 chars
+                    context += f"\n\nDocument ID: {st.session_state.doc_ids[idx]}\n{st.session_state.documents[idx][:1000]}..."
 
             if not context:
                 context = "No relevant documents found."
 
             # Prompt OpenAI
-            response = client.chat.completions.create(model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query."},
-                {"role": "user", "content": f"Context: {context}\n\nQuery: {prompt}"}
-            ]).choices[0].message.content
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query."},
+                    {"role": "user", "content": f"Context: {context}\n\nQuery: {prompt}"}
+                ]
+            ).choices[0].message.content
 
         except Exception as e:
             response = f"Error generating response: {str(e)}"
