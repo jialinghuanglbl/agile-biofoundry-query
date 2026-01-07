@@ -109,7 +109,7 @@ with st.sidebar:
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("🗑️ Clear All", type="secondary"):
+            if st.button("Clear All", type="secondary"):
                 st.session_state.documents = []
                 st.session_state.doc_ids = []
                 st.session_state.doc_metadata = []
@@ -278,7 +278,7 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
 
             # Prompt OpenAI
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query."},
                     {"role": "user", "content": f"Context: {context}\n\nQuery: {prompt}"}
