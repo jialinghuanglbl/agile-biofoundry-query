@@ -23,23 +23,19 @@ def extract_pdf_text(pdf_content):
 # Streamlit app
 st.title("Agile Biofoundry Zotero Query App")
 
-# Sidebar for credentials
-st.sidebar.header("Zotero Credentials")
-zotero_library_id = st.sidebar.text_input("Zotero Library ID")
-zotero_api_key = st.sidebar.text_input("Zotero API Key", type="password")
-zotero_library_type = st.sidebar.selectbox("Library Type", ["user", "group"])
+# Load credentials from secrets
+zotero_library_id = st.secrets["zotero_library_id"]
+zotero_api_key = st.secrets["zotero_api_key"]
+zotero_library_type = st.secrets["zotero_library_type"]
+openai_api_key = st.secrets["openai_api_key"]
+zotero_collection_key = st.secrets.get("zotero_collection_key", "")  # Optional
 
-# OpenAI API key
-openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 openai.api_key = openai_api_key
 
-# Collection name or key (assuming a specific collection for agile biofoundry)
-zotero_collection_key = st.sidebar.text_input("Zotero Collection Key (optional)")
-
 # Button to load library
-if st.sidebar.button("Load Zotero Library"):
+if st.button("Load Zotero Library"):
     if not zotero_library_id or not zotero_api_key:
-        st.error("Please provide Zotero Library ID and API Key.")
+        st.error("Zotero Library ID and API Key must be set in Streamlit secrets.")
     else:
         try:
             zot = zotero.Zotero(zotero_library_id, zotero_library_type, zotero_api_key)
@@ -128,7 +124,7 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
         st.markdown(prompt)
     
     if "documents" not in st.session_state or not openai_api_key:
-        response = "Please load the Zotero library and provide OpenAI API key first."
+        response = "Please load the Zotero library and ensure OpenAI API key is set in secrets."
     else:
         try:
             # Retrieve relevant documents using TF-IDF
