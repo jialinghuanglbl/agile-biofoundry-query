@@ -129,11 +129,6 @@ with st.sidebar:
                             del st.session_state.tfidf_matrix
                     
                     st.rerun()
-                            del st.session_state.vectorizer
-                        if 'tfidf_matrix' in st.session_state:
-                            del st.session_state.tfidf_matrix
-                    
-                    st.rerun()
         
         # Bulk actions
         st.subheader("Bulk Actions")
