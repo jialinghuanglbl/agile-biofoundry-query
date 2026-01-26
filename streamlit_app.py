@@ -9,6 +9,16 @@ import requests
 import io
 import os
 import json
+from article_storage import (
+    load_articles,
+    save_articles,
+    article_exists,
+    add_article,
+    get_all_articles,
+    remove_article,
+    clear_all_articles,
+    get_article_count
+)
 
 # Function to extract text from PDF content
 def extract_pdf_text(pdf_content):
@@ -36,11 +46,23 @@ client = OpenAI(api_key=openai_api_key)
 
 # Initialize session state for documents
 if "documents" not in st.session_state:
-    st.session_state.documents = []
+    # Load from persistent storage
+    documents, doc_ids, doc_metadata = get_all_articles()
+    st.session_state.documents = documents
+    st.session_state.doc_ids = doc_ids
+    st.session_state.doc_metadata = doc_metadata
+    
+    # Fit TF-IDF if documents exist
+    if documents:
+        vectorizer = TfidfVectorizer(stop_words='english')
+        tfidf_matrix = vectorizer.fit_transform(documents)
+        st.session_state.vectorizer = vectorizer
+        st.session_state.tfidf_matrix = tfidf_matrix
+    
 if "doc_ids" not in st.session_state:
     st.session_state.doc_ids = []
 if "doc_metadata" not in st.session_state:
-    st.session_state.doc_metadata = []  # Store titles and other metadata
+    st.session_state.doc_metadata = []
 
 # Sidebar for document management
 with st.sidebar:
@@ -84,7 +106,11 @@ with st.sidebar:
                 
                 # Delete button
                 if st.button(f"Delete", key=f"delete_{idx}"):
-                    # Remove from all lists
+                    # Remove from storage
+                    zotero_id = st.session_state.doc_ids[idx]
+                    remove_article(zotero_id)
+                    
+                    # Remove from session state
                     del st.session_state.documents[idx]
                     del st.session_state.doc_ids[idx]
                     del st.session_state.doc_metadata[idx]
@@ -103,6 +129,11 @@ with st.sidebar:
                             del st.session_state.tfidf_matrix
                     
                     st.rerun()
+                            del st.session_state.vectorizer
+                        if 'tfidf_matrix' in st.session_state:
+                            del st.session_state.tfidf_matrix
+                    
+                    st.rerun()
         
         # Bulk actions
         st.subheader("Bulk Actions")
@@ -110,6 +141,7 @@ with st.sidebar:
         
         with col1:
             if st.button("Clear All", type="secondary"):
+                clear_all_articles()
                 st.session_state.documents = []
                 st.session_state.doc_ids = []
                 st.session_state.doc_metadata = []
@@ -161,6 +193,8 @@ if st.button("Load Zotero Library", type="primary"):
                 documents = []
                 doc_ids = []
                 doc_metadata = []
+                duplicates = []
+                new_count = 0
 
                 progress_bar = st.progress(0)
                 total_items = len(items)
@@ -171,6 +205,11 @@ if st.button("Load Zotero Library", type="primary"):
                     
                     # Skip if not a relevant item type
                     if item['data']['itemType'] not in ['journalArticle', 'webpage', 'report', 'conferencePaper']:
+                        continue
+
+                    # Check if article already exists
+                    if article_exists(item['key'], load_articles()):
+                        duplicates.append(item['data'].get('title', 'Untitled'))
                         continue
 
                     # Extract metadata text
@@ -204,17 +243,21 @@ if st.button("Load Zotero Library", type="primary"):
                                         text += f"\n{response.text}"
 
                     if text.strip():
-                        documents.append(text)
-                        doc_ids.append(item['key'])
-                        doc_metadata.append({
-                            'title': title,
-                            'itemType': item_type,
-                            'abstract': abstract[:200] if abstract else ''
-                        })
+                        # Add to storage
+                        success, msg = add_article(item['key'], text, title, item_type, abstract)
+                        if success:
+                            documents.append(text)
+                            doc_ids.append(item['key'])
+                            doc_metadata.append({
+                                'title': title,
+                                'itemType': item_type,
+                                'abstract': abstract[:200] if abstract else ''
+                            })
+                            new_count += 1
 
                 progress_bar.empty()
 
-                if not documents:
+                if not documents and not duplicates:
                     st.error("No documents found in the library.")
                 else:
                     # Store documents in session state
@@ -223,12 +266,19 @@ if st.button("Load Zotero Library", type="primary"):
                     st.session_state.doc_metadata = doc_metadata
 
                     # Fit TF-IDF
-                    vectorizer = TfidfVectorizer(stop_words='english')
-                    tfidf_matrix = vectorizer.fit_transform(documents)
-                    st.session_state.vectorizer = vectorizer
-                    st.session_state.tfidf_matrix = tfidf_matrix
+                    if documents:
+                        vectorizer = TfidfVectorizer(stop_words='english')
+                        tfidf_matrix = vectorizer.fit_transform(documents)
+                        st.session_state.vectorizer = vectorizer
+                        st.session_state.tfidf_matrix = tfidf_matrix
 
-                    st.success(f"Loaded {len(documents)} documents from Zotero.")
+                    message = f"Loaded {new_count} new documents from Zotero."
+                    if duplicates:
+                        message += f" Skipped {len(duplicates)} duplicate(s): {', '.join(duplicates[:3])}"
+                        if len(duplicates) > 3:
+                            message += f" and {len(duplicates) - 3} more..."
+                    
+                    st.success(message)
                     st.rerun()
             except Exception as e:
                 st.error(f"Error loading Zotero library: {str(e)}")
