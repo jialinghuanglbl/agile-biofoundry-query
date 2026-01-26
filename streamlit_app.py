@@ -257,15 +257,10 @@ if st.button("Load Zotero Library", type="primary"):
                     item_type = item['data']['itemType']
                     title = item['data'].get('title', 'Untitled')
                     
-                    # Skip attachments and notes - these are processed as children of parent items
-                    if item_type in ['attachment', 'note', 'annotation']:
+                    # Skip notes and annotations (but NOT attachments - we'll process those)
+                    if item_type in ['note', 'annotation']:
                         continue
                     
-                    # Track items with other non-supported types
-                    if item_type not in ['journalArticle', 'webpage', 'report', 'conferencePaper', 'book', 'bookSection', 'preprint', 'document', 'presentation']:
-                        skipped_items['wrong_type'].append(f"{title} ({item_type})")
-                        continue
-
                     # Check if article already exists
                     if article_exists(item['key'], load_articles()):
                         duplicates.append(title)
@@ -273,7 +268,50 @@ if st.button("Load Zotero Library", type="primary"):
                         continue
 
                     try:
-                        # Extract metadata text
+                        # Handle standalone attachments (PDFs without parent items)
+                        if item_type == 'attachment':
+                            link_mode = item['data'].get('linkMode', '')
+                            content_type = item['data'].get('contentType', '')
+                            
+                            # Only process PDF attachments
+                            if 'application/pdf' in content_type or link_mode in ['linked_file', 'imported_file', 'imported_url']:
+                                file_url = f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{item['key']}/file?key={zotero_api_key}"
+                                try:
+                                    response = requests.get(file_url, timeout=10)
+                                    if response.status_code == 200:
+                                        actual_content_type = response.headers.get('Content-Type', '')
+                                        if 'application/pdf' in actual_content_type:
+                                            pdf_text = extract_pdf_text(response.content)
+                                            if not pdf_text.startswith("Error") and pdf_text.strip():
+                                                text = f"{title}\n{pdf_text}"
+                                                
+                                                # Add standalone PDF
+                                                success, msg = add_article(item['key'], text, title, 'attachment', '')
+                                                if success:
+                                                    documents.append(text)
+                                                    doc_ids.append(item['key'])
+                                                    doc_metadata.append({
+                                                        'title': title,
+                                                        'itemType': 'attachment (PDF)',
+                                                        'abstract': ''
+                                                    })
+                                                    new_count += 1
+                                            else:
+                                                skipped_items['no_content'].append(f"{title} (PDF extraction failed)")
+                                        else:
+                                            skipped_items['wrong_type'].append(f"{title} (non-PDF attachment)")
+                                except Exception as e:
+                                    skipped_items['errors'].append(f"{title}: {str(e)}")
+                            else:
+                                skipped_items['wrong_type'].append(f"{title} (non-PDF attachment)")
+                            continue
+                        
+                        # Track items with other non-supported types
+                        if item_type not in ['journalArticle', 'webpage', 'report', 'conferencePaper', 'book', 'bookSection', 'preprint', 'document', 'presentation']:
+                            skipped_items['wrong_type'].append(f"{title} ({item_type})")
+                            continue
+
+                        # Extract metadata text for regular items
                         abstract = item['data'].get('abstractNote', '')
                         notes = []
 
@@ -371,28 +409,28 @@ if st.button("Load Zotero Library", type="primary"):
 if "last_load_report" in st.session_state:
     report = st.session_state.last_load_report
     
-    st.success(f"Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
+    st.success(f"✅ Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
     
     if report['duplicates'] > 0:
-        st.info(f"Skipped {report['duplicates']} duplicates (already in database)")
+        st.info(f"ℹ️ Skipped {report['duplicates']} duplicates (already in database)")
     
     skipped = report['skipped_items']
     
     # Display detailed skip report
     if skipped['wrong_type']:
-        st.warning(f"Skipped {len(skipped['wrong_type'])} items due to item type:")
+        st.warning(f"⚠️ Skipped {len(skipped['wrong_type'])} items due to item type:")
         with st.expander("View skipped item types"):
             for item in skipped['wrong_type']:
                 st.write(f"- {item}")
 
     if skipped['no_content']:
-        st.warning(f"Skipped {len(skipped['no_content'])} items with no extractable content:")
+        st.warning(f"⚠️ Skipped {len(skipped['no_content'])} items with no extractable content:")
         with st.expander("View items with no content"):
             for item in skipped['no_content']:
                 st.write(f"- {item}")
 
     if skipped['errors']:
-        st.error(f"Encountered {len(skipped['errors'])} errors:")
+        st.error(f"❌ Encountered {len(skipped['errors'])} errors:")
         with st.expander("View errors"):
             for item in skipped['errors']:
                 st.write(f"- {item}")
