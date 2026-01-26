@@ -257,7 +257,11 @@ if st.button("Load Zotero Library", type="primary"):
                     item_type = item['data']['itemType']
                     title = item['data'].get('title', 'Untitled')
                     
-                    # Track items with wrong type (expand this list to include more types)
+                    # Skip attachments and notes - these are processed as children of parent items
+                    if item_type in ['attachment', 'note', 'annotation']:
+                        continue
+                    
+                    # Track items with other non-supported types
                     if item_type not in ['journalArticle', 'webpage', 'report', 'conferencePaper', 'book', 'bookSection', 'preprint', 'document', 'presentation']:
                         skipped_items['wrong_type'].append(f"{title} ({item_type})")
                         continue
@@ -367,28 +371,28 @@ if st.button("Load Zotero Library", type="primary"):
 if "last_load_report" in st.session_state:
     report = st.session_state.last_load_report
     
-    st.success(f"✅ Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
+    st.success(f"Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
     
     if report['duplicates'] > 0:
-        st.info(f"ℹ️ Skipped {report['duplicates']} duplicates (already in database)")
+        st.info(f"Skipped {report['duplicates']} duplicates (already in database)")
     
     skipped = report['skipped_items']
     
     # Display detailed skip report
     if skipped['wrong_type']:
-        st.warning(f"⚠️ Skipped {len(skipped['wrong_type'])} items due to item type:")
+        st.warning(f"Skipped {len(skipped['wrong_type'])} items due to item type:")
         with st.expander("View skipped item types"):
             for item in skipped['wrong_type']:
                 st.write(f"- {item}")
 
     if skipped['no_content']:
-        st.warning(f"⚠️ Skipped {len(skipped['no_content'])} items with no extractable content:")
+        st.warning(f"Skipped {len(skipped['no_content'])} items with no extractable content:")
         with st.expander("View items with no content"):
             for item in skipped['no_content']:
                 st.write(f"- {item}")
 
     if skipped['errors']:
-        st.error(f"❌ Encountered {len(skipped['errors'])} errors:")
+        st.error(f"Encountered {len(skipped['errors'])} errors:")
         with st.expander("View errors"):
             for item in skipped['errors']:
                 st.write(f"- {item}")
