@@ -377,20 +377,23 @@ if st.button("Load Zotero Library", type="primary"):
                 if not documents and not duplicates:
                     st.error("No documents found in the library.")
                 else:
-                    # Store documents in session state
-                    st.session_state.documents = documents
-                    st.session_state.doc_ids = doc_ids
-                    st.session_state.doc_metadata = doc_metadata
+                    # Reload ALL documents from storage (including previously stored ones)
+                    all_documents, all_doc_ids, all_doc_metadata = get_all_articles()
+                    
+                    # Store all documents in session state
+                    st.session_state.documents = all_documents
+                    st.session_state.doc_ids = all_doc_ids
+                    st.session_state.doc_metadata = all_doc_metadata
 
                     # Fit TF-IDF
-                    if documents:
+                    if all_documents:
                         vectorizer = TfidfVectorizer(stop_words='english')
-                        tfidf_matrix = vectorizer.fit_transform(documents)
+                        tfidf_matrix = vectorizer.fit_transform(all_documents)
                         st.session_state.vectorizer = vectorizer
                         st.session_state.tfidf_matrix = tfidf_matrix
                         
                         # Create chunks for better retrieval
-                        chunks, doc_id_mapping = create_chunked_documents(documents, doc_ids, doc_metadata)
+                        chunks, doc_id_mapping = create_chunked_documents(all_documents, all_doc_ids, all_doc_metadata)
                         st.session_state.chunks = chunks
                         st.session_state.doc_id_mapping = doc_id_mapping
                         
@@ -401,6 +404,10 @@ if st.button("Load Zotero Library", type="primary"):
                         st.session_state.chunk_vectorizer = chunk_vectorizer
                         st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
 
+                    message = f"Loaded {new_count} new documents from Zotero (Total: {len(all_documents)} documents)"
+                    if duplicates:
+                        message += f". Skipped {len(duplicates)} duplicate(s)."
+                    st.success(message)
                     st.rerun()
             except Exception as e:
                 st.error(f"Error loading Zotero library: {str(e)}")
@@ -409,28 +416,28 @@ if st.button("Load Zotero Library", type="primary"):
 if "last_load_report" in st.session_state:
     report = st.session_state.last_load_report
     
-    st.success(f"✅ Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
+    st.success(f"Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
     
     if report['duplicates'] > 0:
-        st.info(f"ℹ️ Skipped {report['duplicates']} duplicates (already in database)")
+        st.info(f"Skipped {report['duplicates']} duplicates (already in database)")
     
     skipped = report['skipped_items']
     
     # Display detailed skip report
     if skipped['wrong_type']:
-        st.warning(f"⚠️ Skipped {len(skipped['wrong_type'])} items due to item type:")
+        st.warning(f"Skipped {len(skipped['wrong_type'])} items due to item type:")
         with st.expander("View skipped item types"):
             for item in skipped['wrong_type']:
                 st.write(f"- {item}")
 
     if skipped['no_content']:
-        st.warning(f"⚠️ Skipped {len(skipped['no_content'])} items with no extractable content:")
+        st.warning(f"Skipped {len(skipped['no_content'])} items with no extractable content:")
         with st.expander("View items with no content"):
             for item in skipped['no_content']:
                 st.write(f"- {item}")
 
     if skipped['errors']:
-        st.error(f"❌ Encountered {len(skipped['errors'])} errors:")
+        st.error(f"Encountered {len(skipped['errors'])} errors:")
         with st.expander("View errors"):
             for item in skipped['errors']:
                 st.write(f"- {item}")
