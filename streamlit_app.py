@@ -324,30 +324,13 @@ if st.button("Load Zotero Library", type="primary"):
 
                 progress_bar.empty()
 
-                # Display detailed skip report
-                if skipped_items['wrong_type']:
-                    st.warning(f"Skipped {len(skipped_items['wrong_type'])} items due to item type:")
-                    with st.expander("View skipped item types"):
-                        for item in skipped_items['wrong_type'][:10]:
-                            st.write(f"- {item}")
-                        if len(skipped_items['wrong_type']) > 10:
-                            st.write(f"... and {len(skipped_items['wrong_type']) - 10} more")
-
-                if skipped_items['no_content']:
-                    st.warning(f"Skipped {len(skipped_items['no_content'])} items with no extractable content:")
-                    with st.expander("View items with no content"):
-                        for item in skipped_items['no_content'][:10]:
-                            st.write(f"- {item}")
-                        if len(skipped_items['no_content']) > 10:
-                            st.write(f"... and {len(skipped_items['no_content']) - 10} more")
-
-                if skipped_items['errors']:
-                    st.error(f"Encountered {len(skipped_items['errors'])} errors:")
-                    with st.expander("View errors"):
-                        for item in skipped_items['errors'][:10]:
-                            st.write(f"- {item}")
-                        if len(skipped_items['errors']) > 10:
-                            st.write(f"... and {len(skipped_items['errors']) - 10} more")
+                # Store skip report in session state for persistence
+                st.session_state.last_load_report = {
+                    'new_count': new_count,
+                    'duplicates': len(duplicates),
+                    'skipped_items': skipped_items,
+                    'total_processed': total_items
+                }
 
                 if not documents and not duplicates:
                     st.error("No documents found in the library.")
@@ -376,14 +359,44 @@ if st.button("Load Zotero Library", type="primary"):
                         st.session_state.chunk_vectorizer = chunk_vectorizer
                         st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
 
-                    message = f"Loaded {new_count} new documents from Zotero."
-                    if duplicates:
-                        message += f" Skipped {len(duplicates)} duplicate(s)."
-                    
-                    st.success(message)
                     st.rerun()
             except Exception as e:
                 st.error(f"Error loading Zotero library: {str(e)}")
+
+# Display persistent load report if it exists
+if "last_load_report" in st.session_state:
+    report = st.session_state.last_load_report
+    
+    st.success(f"✅ Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
+    
+    if report['duplicates'] > 0:
+        st.info(f"ℹ️ Skipped {report['duplicates']} duplicates (already in database)")
+    
+    skipped = report['skipped_items']
+    
+    # Display detailed skip report
+    if skipped['wrong_type']:
+        st.warning(f"⚠️ Skipped {len(skipped['wrong_type'])} items due to item type:")
+        with st.expander("View skipped item types"):
+            for item in skipped['wrong_type']:
+                st.write(f"- {item}")
+
+    if skipped['no_content']:
+        st.warning(f"⚠️ Skipped {len(skipped['no_content'])} items with no extractable content:")
+        with st.expander("View items with no content"):
+            for item in skipped['no_content']:
+                st.write(f"- {item}")
+
+    if skipped['errors']:
+        st.error(f"❌ Encountered {len(skipped['errors'])} errors:")
+        with st.expander("View errors"):
+            for item in skipped['errors']:
+                st.write(f"- {item}")
+    
+    # Button to clear the report
+    if st.button("Clear Load Report"):
+        del st.session_state.last_load_report
+        st.rerun()
 
 # Chat interface
 st.header("Query the Agile Biofoundry Knowledge Base")
