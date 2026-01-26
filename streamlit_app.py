@@ -19,6 +19,11 @@ from article_storage import (
     clear_all_articles,
     get_article_count
 )
+from document_retrieval import (
+    create_chunked_documents,
+    retrieve_relevant_chunks,
+    format_context_from_chunks
+)
 
 # Function to extract text from PDF content
 def extract_pdf_text(pdf_content):
@@ -58,6 +63,18 @@ if "documents" not in st.session_state:
         tfidf_matrix = vectorizer.fit_transform(documents)
         st.session_state.vectorizer = vectorizer
         st.session_state.tfidf_matrix = tfidf_matrix
+        
+        # Create chunks for better retrieval
+        chunks, doc_id_mapping = create_chunked_documents(documents, doc_ids, doc_metadata)
+        st.session_state.chunks = chunks
+        st.session_state.doc_id_mapping = doc_id_mapping
+        
+        # Create TF-IDF matrix for chunks
+        chunk_texts = [chunk['text'] for chunk in chunks]
+        chunk_vectorizer = TfidfVectorizer(stop_words='english')
+        chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
+        st.session_state.chunk_vectorizer = chunk_vectorizer
+        st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
     
 if "doc_ids" not in st.session_state:
     st.session_state.doc_ids = []
@@ -115,18 +132,41 @@ with st.sidebar:
                     del st.session_state.doc_ids[idx]
                     del st.session_state.doc_metadata[idx]
                     
-                    # Refit TF-IDF if documents remain
+                    # Refit TF-IDF and chunks if documents remain
                     if st.session_state.documents:
                         vectorizer = TfidfVectorizer(stop_words='english')
                         tfidf_matrix = vectorizer.fit_transform(st.session_state.documents)
                         st.session_state.vectorizer = vectorizer
                         st.session_state.tfidf_matrix = tfidf_matrix
+                        
+                        # Recreate chunks
+                        chunks, doc_id_mapping = create_chunked_documents(
+                            st.session_state.documents,
+                            st.session_state.doc_ids,
+                            st.session_state.doc_metadata
+                        )
+                        st.session_state.chunks = chunks
+                        st.session_state.doc_id_mapping = doc_id_mapping
+                        
+                        chunk_texts = [chunk['text'] for chunk in chunks]
+                        chunk_vectorizer = TfidfVectorizer(stop_words='english')
+                        chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
+                        st.session_state.chunk_vectorizer = chunk_vectorizer
+                        st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
                     else:
-                        # Clear vectorizer if no documents
+                        # Clear vectorizer and chunks if no documents
                         if 'vectorizer' in st.session_state:
                             del st.session_state.vectorizer
                         if 'tfidf_matrix' in st.session_state:
                             del st.session_state.tfidf_matrix
+                        if 'chunks' in st.session_state:
+                            del st.session_state.chunks
+                        if 'doc_id_mapping' in st.session_state:
+                            del st.session_state.doc_id_mapping
+                        if 'chunk_vectorizer' in st.session_state:
+                            del st.session_state.chunk_vectorizer
+                        if 'chunk_tfidf_matrix' in st.session_state:
+                            del st.session_state.chunk_tfidf_matrix
                     
                     st.rerun()
         
@@ -144,6 +184,14 @@ with st.sidebar:
                     del st.session_state.vectorizer
                 if 'tfidf_matrix' in st.session_state:
                     del st.session_state.tfidf_matrix
+                if 'chunks' in st.session_state:
+                    del st.session_state.chunks
+                if 'doc_id_mapping' in st.session_state:
+                    del st.session_state.doc_id_mapping
+                if 'chunk_vectorizer' in st.session_state:
+                    del st.session_state.chunk_vectorizer
+                if 'chunk_tfidf_matrix' in st.session_state:
+                    del st.session_state.chunk_tfidf_matrix
                 st.rerun()
         
         with col2:
@@ -266,6 +314,18 @@ if st.button("Load Zotero Library", type="primary"):
                         tfidf_matrix = vectorizer.fit_transform(documents)
                         st.session_state.vectorizer = vectorizer
                         st.session_state.tfidf_matrix = tfidf_matrix
+                        
+                        # Create chunks for better retrieval
+                        chunks, doc_id_mapping = create_chunked_documents(documents, doc_ids, doc_metadata)
+                        st.session_state.chunks = chunks
+                        st.session_state.doc_id_mapping = doc_id_mapping
+                        
+                        # Create TF-IDF matrix for chunks
+                        chunk_texts = [chunk['text'] for chunk in chunks]
+                        chunk_vectorizer = TfidfVectorizer(stop_words='english')
+                        chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
+                        st.session_state.chunk_vectorizer = chunk_vectorizer
+                        st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
 
                     message = f"Loaded {new_count} new documents from Zotero."
                     if duplicates:
@@ -300,33 +360,29 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
         response = "Please load the Zotero library and ensure OpenAI API key is set in secrets."
     else:
         try:
-            # Retrieve relevant documents using TF-IDF
-            vectorizer = st.session_state.vectorizer
-            tfidf_matrix = st.session_state.tfidf_matrix
-            query_vec = vectorizer.transform([prompt])
-            similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
-            top_indices = np.argsort(similarities)[-3:][::-1]  # Top 3 documents
-            context = ""
-            cited_docs = []
+            # Retrieve relevant chunks using smart retrieval
+            relevant_chunks, seen_docs = retrieve_relevant_chunks(
+                prompt,
+                st.session_state.chunk_vectorizer,
+                st.session_state.chunk_tfidf_matrix,
+                st.session_state.chunks,
+                st.session_state.doc_id_mapping,
+                k=8,  # Retrieve top 8 chunks
+                similarity_threshold=0.05
+            )
             
-            for idx in top_indices:
-                if similarities[idx] > 0.1:  # Threshold for relevance
-                    context += f"\n\nDocument ID: {st.session_state.doc_ids[idx]}\n{st.session_state.documents[idx][:1000]}..."
-                    cited_docs.append({
-                        'title': st.session_state.doc_metadata[idx].get('title', 'Untitled'),
-                        'id': st.session_state.doc_ids[idx],
-                        'similarity': float(similarities[idx])
-                    })
-
-            if not context:
+            # Format context from chunks
+            context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs)
+            
+            if not context or context == "":
                 context = "No relevant documents found."
 
-            # Prompt OpenAI
+            # Prompt OpenAI with full chunk content
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query."},
-                    {"role": "user", "content": f"Context: {context}\n\nQuery: {prompt}"}
+                    {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query comprehensively."},
+                    {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {prompt}"}
                 ]
             ).choices[0].message.content
             
@@ -334,7 +390,7 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
             if cited_docs:
                 response += "\n\n---\n**Sources:**\n"
                 for doc in cited_docs:
-                    response += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%})\n"
+                    response += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
 
         except Exception as e:
             response = f"Error generating response: {str(e)}"
