@@ -338,6 +338,102 @@ if st.button("Load Zotero Library", type="primary"):
             except Exception as e:
                 st.error(f"Error loading Zotero library: {str(e)}")
 
+skipped_items = {
+    'wrong_type': [],
+    'duplicate': [],
+    'no_content': [],
+    'errors': []
+}
+
+for item_idx, item in enumerate(items):
+    progress_bar.progress((item_idx + 1) / total_items)
+    
+    item_type = item['data']['itemType']
+    title = item['data'].get('title', 'Untitled')
+    
+    # Track items with wrong type
+    if item_type not in ['journalArticle', 'webpage', 'report', 'conferencePaper']:
+        skipped_items['wrong_type'].append(f"{title} ({item_type})")
+        continue
+
+    # Check if article already exists
+    if article_exists(item['key'], load_articles()):
+        duplicates.append(title)
+        skipped_items['duplicate'].append(title)
+        continue
+
+    try:
+        # Extract metadata text
+        abstract = item['data'].get('abstractNote', '')
+        notes = []
+
+        # Get child notes
+        children = zot.children(item['key'])
+        for child in children:
+            if child['data']['itemType'] == 'note':
+                notes.append(child['data'].get('note', ''))
+
+        text = f"{title}\n{abstract}\n{' '.join(notes)}"
+
+        # If there are attachments (e.g., PDF or snapshot)
+        for child in children:
+            if child['data']['itemType'] == 'attachment':
+                link_mode = child['data'].get('linkMode', '')
+                if link_mode in ['linked_file', 'imported_file', 'imported_url']:
+                    file_url = f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
+                    response = requests.get(file_url)
+                    if response.status_code == 200:
+                        content_type = response.headers.get('Content-Type', '')
+                        if 'application/pdf' in content_type:
+                            pdf_text = extract_pdf_text(response.content)
+                            text += f"\n{pdf_text}"
+                        elif 'text/html' in content_type:
+                            text += f"\n{response.text}"
+
+        if text.strip():
+            success, msg = add_article(item['key'], text, title, item_type, abstract)
+            if success:
+                documents.append(text)
+                doc_ids.append(item['key'])
+                doc_metadata.append({
+                    'title': title,
+                    'itemType': item_type,
+                    'abstract': abstract[:200] if abstract else ''
+                })
+                new_count += 1
+        else:
+            skipped_items['no_content'].append(title)
+            
+    except Exception as e:
+        skipped_items['errors'].append(f"{title}: {str(e)}")
+
+progress_bar.empty()
+
+# Display detailed skip report
+if skipped_items['wrong_type']:
+    st.warning(f"Skipped {len(skipped_items['wrong_type'])} items due to item type:")
+    with st.expander("View skipped item types"):
+        for item in skipped_items['wrong_type'][:10]:
+            st.write(f"- {item}")
+        if len(skipped_items['wrong_type']) > 10:
+            st.write(f"... and {len(skipped_items['wrong_type']) - 10} more")
+
+if skipped_items['no_content']:
+    st.warning(f"Skipped {len(skipped_items['no_content'])} items with no extractable content:")
+    with st.expander("View items with no content"):
+        for item in skipped_items['no_content'][:10]:
+            st.write(f"- {item}")
+        if len(skipped_items['no_content']) > 10:
+            st.write(f"... and {len(skipped_items['no_content']) - 10} more")
+
+if skipped_items['errors']:
+    st.error(f"❌ Encountered {len(skipped_items['errors'])} errors:")
+    with st.expander("View errors"):
+        for item in skipped_items['errors'][:10]:
+            st.write(f"- {item}")
+        if len(skipped_items['errors']) > 10:
+            st.write(f"... and {len(skipped_items['errors']) - 10} more")
+
 # Chat interface
 st.header("Query the Agile Biofoundry Knowledge Base")
 
