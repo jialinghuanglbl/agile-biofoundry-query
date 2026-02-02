@@ -36,6 +36,52 @@ def extract_pdf_text(pdf_content):
     except Exception as e:
         return f"Error extracting PDF text: {str(e)}"
 
+
+def ensure_chunk_index() -> bool:
+    """Ensure that chunk index and TF-IDF are initialized in session state.
+
+    Returns True if an index is available, False otherwise.
+    """
+    # If already present and non-empty, we're good
+    if st.session_state.get('chunk_vectorizer') is not None and st.session_state.get('chunk_tfidf_matrix') is not None and st.session_state.get('chunks'):
+        return True
+
+    # Need documents to build index
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        return False
+
+    chunk_size = st.session_state.get('chunk_size', 800)
+    overlap = st.session_state.get('overlap', 150)
+    summary_sentences = st.session_state.get('summary_sentences', 3)
+    use_summaries = st.session_state.get('use_summaries', True)
+
+    chunks, doc_id_mapping = create_chunked_documents(
+        st.session_state.documents,
+        st.session_state.doc_ids,
+        st.session_state.doc_metadata,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        summary_sentences=summary_sentences
+    )
+
+    if not chunks:
+        # No chunks could be created
+        st.session_state.chunks = []
+        st.session_state.doc_id_mapping = []
+        return False
+
+    st.session_state.chunks = chunks
+    st.session_state.doc_id_mapping = doc_id_mapping
+
+    chunk_texts = [c['summary'] if use_summaries and c.get('summary') else c['text'] for c in chunks]
+    chunk_vectorizer = TfidfVectorizer(stop_words='english')
+    chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
+    st.session_state.chunk_vectorizer = chunk_vectorizer
+    st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
+
+    st.success(f"Auto-rebuilt index with {len(chunks)} chunks")
+    return True
+
 # Streamlit app
 st.title("Agile Biofoundry Zotero Query App")
 
@@ -513,41 +559,45 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
         response = "Please load the Zotero library and ensure OpenAI API key is set in secrets."
     else:
         try:
-            # Retrieve relevant chunks using smart retrieval
-            k_chunks = st.session_state.get('k_chunks', 6)
-            similarity_threshold = 0.05
+            # Ensure chunk index exists; auto-rebuild if missing
+            if not ensure_chunk_index():
+                response = "No indexed documents available to answer the query. Please load the Zotero library."
+            else:
+                # Retrieve relevant chunks using smart retrieval
+                k_chunks = st.session_state.get('k_chunks', 6)
+                similarity_threshold = 0.05
 
-            relevant_chunks, seen_docs = retrieve_relevant_chunks(
-                prompt,
-                st.session_state.chunk_vectorizer,
-                st.session_state.chunk_tfidf_matrix,
-                st.session_state.chunks,
-                st.session_state.doc_id_mapping,
-                k=k_chunks,
-                similarity_threshold=similarity_threshold
-            )
-            
-            # Format context from chunks (use summaries if enabled)
-            use_summaries = st.session_state.get('use_summaries', True)
-            context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
-            
-            if not context or context == "":
-                context = "No relevant documents found."
+                relevant_chunks, seen_docs = retrieve_relevant_chunks(
+                    prompt,
+                    st.session_state.chunk_vectorizer,
+                    st.session_state.chunk_tfidf_matrix,
+                    st.session_state.chunks,
+                    st.session_state.doc_id_mapping,
+                    k=k_chunks,
+                    similarity_threshold=similarity_threshold
+                )
+                
+                # Format context from chunks (use summaries if enabled)
+                use_summaries = st.session_state.get('use_summaries', True)
+                context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
+                
+                if not context or context == "":
+                    context = "No relevant documents found."
 
-            # Prompt OpenAI with condensed chunk content (summaries may be used to reduce tokens)
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query comprehensively."},
-                    {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {prompt}"}
-                ]
-            ).choices[0].message.content
-            
-            # Add citations if documents were used
-            if cited_docs:
-                response += "\n\n---\n**Sources:**\n"
-                for doc in cited_docs:
-                    response += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                # Prompt OpenAI with condensed chunk content (summaries may be used to reduce tokens)
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query comprehensively."},
+                        {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {prompt}"}
+                    ]
+                ).choices[0].message.content
+                
+                # Add citations if documents were used
+                if cited_docs:
+                    response += "\n\n---\n**Sources:**\n"
+                    for doc in cited_docs:
+                        response += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
 
         except Exception as e:
             response = f"Error generating response: {str(e)}"
