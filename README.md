@@ -10,10 +10,11 @@ Using Zotero
 - All changes are persisted to the storage file
 
 ### Smart Document Retrieval
-- **Document Chunking**: Long articles are split into meaningful chunks (1500 characters with 300-character overlap) to preserve context while enabling fine-grained retrieval
-- **Enhanced Context**: The chatbot retrieves up to 8 relevant chunks instead of just 1000 characters from 3 documents
+- **Document Chunking**: Long articles are split into narrower, meaningful chunks (default 800 characters with 150-character overlap) to preserve context while enabling fine-grained retrieval
+- **Chunk Summaries**: Each chunk can be summarized (extractive summarization) and indexing/retrieval can use summaries to reduce tokens while keeping relevant content
+- **Enhanced Context**: The chatbot retrieves up to N relevant chunks (configurable; default 6) instead of just 1000 characters from 3 documents
 - **Multi-chunk Support**: When multiple relevant chunks are found from the same document, they're all included in the context
-- **Better Answers**: More comprehensive article content enables the AI to provide more detailed and accurate responses
+- **Better Answers with Fewer Tokens**: Summaries + narrower chunks keep relevance high while reducing LLM input size
 
 ### Article Storage Module (`article_storage.py`)
 The `article_storage` module provides functions to manage article persistence:

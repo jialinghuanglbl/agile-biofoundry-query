@@ -7,14 +7,14 @@ import re
 from typing import List, Tuple, Dict
 
 
-def chunk_document(document: str, chunk_size: int = 1500, overlap: int = 300) -> List[Dict]:
+def chunk_document(document: str, chunk_size: int = 800, overlap: int = 150) -> List[Dict]:
     """
     Split a document into overlapping chunks for better context retrieval.
     
     Args:
         document: Full text of the document
         chunk_size: Target size of each chunk in characters
-        overlap: Number of overlapping characters between chunks
+        overlap: Target overlap in characters (approximate, converted to words)
     
     Returns:
         List of chunk dictionaries with text and position info
@@ -38,8 +38,9 @@ def chunk_document(document: str, chunk_size: int = 1500, overlap: int = 300) ->
                 'end': chunk_start_idx + len(current_chunk)
             })
             
-            # Overlap: include last few sentences in next chunk
-            overlap_text = " ".join(current_chunk.split()[-3:])  # Last 3 words
+            # Compute approximate overlap in words (to avoid chopping words/sentences)
+            approx_words = max(1, overlap // 5)  # assume ~5 chars/word
+            overlap_text = " ".join(current_chunk.split()[-approx_words:])
             current_chunk = overlap_text + " " + sentence
             chunk_start_idx = chunk_start_idx + len(current_chunk) - len(overlap_text)
         else:
@@ -56,9 +57,42 @@ def chunk_document(document: str, chunk_size: int = 1500, overlap: int = 300) ->
     return chunks
 
 
-def create_chunked_documents(documents: List[str], doc_ids: List[str], doc_metadata: List[Dict]) -> Tuple[List[Dict], List[str]]:
+def summarize_chunk(text: str, max_sentences: int = 3) -> str:
+    """
+    Simple extractive summarization: pick the top scoring sentences by TF-IDF.
+    This is fast and keeps important sentences while reducing token usage.
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    import numpy as np
+
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    if len(sentences) <= max_sentences:
+        return text.strip()
+
+    try:
+        vec = TfidfVectorizer(stop_words='english')
+        X = vec.fit_transform(sentences)
+        scores = X.sum(axis=1).A1
+        top_idx = np.argsort(scores)[-max_sentences:]
+        top_idx_sorted = sorted(top_idx)
+        summary = " ".join([sentences[i].strip() for i in top_idx_sorted])
+        return summary
+    except Exception:
+        # Fallback: return the first few sentences
+        return " ".join(sentences[:max_sentences]).strip()
+
+
+def create_chunked_documents(
+    documents: List[str],
+    doc_ids: List[str],
+    doc_metadata: List[Dict],
+    chunk_size: int = 800,
+    overlap: int = 150,
+    summary_sentences: int = 3
+) -> Tuple[List[Dict], List[str]]:
     """
     Create chunks for all documents and maintain mapping to original documents.
+    Supports summarization of chunks to reduce token usage during retrieval.
     
     Returns:
         Tuple of (chunks_with_metadata, doc_id_mapping)
@@ -67,13 +101,15 @@ def create_chunked_documents(documents: List[str], doc_ids: List[str], doc_metad
     """
     chunks_with_metadata = []
     doc_id_mapping = []
-    
+
     for doc_idx, (document, doc_id, metadata) in enumerate(zip(documents, doc_ids, doc_metadata)):
-        chunks = chunk_document(document)
-        
+        chunks = chunk_document(document, chunk_size=chunk_size, overlap=overlap)
+
         for chunk in chunks:
+            summary = summarize_chunk(chunk['text'], max_sentences=summary_sentences)
             chunk_data = {
                 'text': chunk['text'],
+                'summary': summary,
                 'doc_id': doc_id,
                 'doc_title': metadata.get('title', 'Untitled'),
                 'doc_type': metadata.get('itemType', 'Unknown'),
@@ -82,7 +118,7 @@ def create_chunked_documents(documents: List[str], doc_ids: List[str], doc_metad
             }
             chunks_with_metadata.append(chunk_data)
             doc_id_mapping.append(doc_idx)
-    
+
     return chunks_with_metadata, doc_id_mapping
 
 
@@ -145,15 +181,20 @@ def retrieve_relevant_chunks(
     return relevant_chunks, seen_docs
 
 
-def format_context_from_chunks(relevant_chunks: List[Dict], seen_docs: Dict) -> Tuple[str, List[Dict]]:
+def format_context_from_chunks(
+    relevant_chunks: List[Dict],
+    seen_docs: Dict,
+    use_summaries: bool = True
+) -> Tuple[str, List[Dict]]:
     """
     Format retrieved chunks into context string for the LLM.
-    
+
+    If `use_summaries` is True, include chunk summaries (shorter). Otherwise include full chunk text.
     Returns:
         Tuple of (formatted_context, cited_docs_list)
     """
     context_parts = []
-    
+
     # Group chunks by document for better readability
     chunks_by_doc = {}
     for chunk in relevant_chunks:
@@ -161,17 +202,18 @@ def format_context_from_chunks(relevant_chunks: List[Dict], seen_docs: Dict) -> 
         if doc_id not in chunks_by_doc:
             chunks_by_doc[doc_id] = []
         chunks_by_doc[doc_id].append(chunk)
-    
+
     # Format context by document
     for doc_id, chunks in chunks_by_doc.items():
         title = chunks[0]['doc_title']
         context_parts.append(f"\n**Source: {title}**")
-        
+
         for i, chunk in enumerate(chunks, 1):
-            context_parts.append(f"\n[Section {i}]\n{chunk['text']}")
-    
+            text_to_include = chunk.get('summary') if use_summaries and chunk.get('summary') else chunk['text']
+            context_parts.append(f"\n[Section {i}]\n{text_to_include}")
+
     context = "\n".join(context_parts)
-    
+
     # Create citations list
     cited_docs = [
         {
@@ -182,5 +224,5 @@ def format_context_from_chunks(relevant_chunks: List[Dict], seen_docs: Dict) -> 
         }
         for doc_id, info in seen_docs.items()
     ]
-    
+
     return context, cited_docs

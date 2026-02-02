@@ -64,13 +64,23 @@ if "documents" not in st.session_state:
         st.session_state.vectorizer = vectorizer
         st.session_state.tfidf_matrix = tfidf_matrix
         
-        # Create chunks for better retrieval
-        chunks, doc_id_mapping = create_chunked_documents(documents, doc_ids, doc_metadata)
+        # Build chunks using current settings
+        chunk_size = st.session_state.get('chunk_size', 800)
+        overlap = st.session_state.get('overlap', 150)
+        summary_sentences = st.session_state.get('summary_sentences', 3)
+        use_summaries = st.session_state.get('use_summaries', True)
+
+        chunks, doc_id_mapping = create_chunked_documents(
+            documents, doc_ids, doc_metadata,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            summary_sentences=summary_sentences
+        )
         st.session_state.chunks = chunks
         st.session_state.doc_id_mapping = doc_id_mapping
         
-        # Create TF-IDF matrix for chunks
-        chunk_texts = [chunk['text'] for chunk in chunks]
+        # Use summaries or full text for chunk indexing
+        chunk_texts = [c['summary'] if use_summaries else c['text'] for c in chunks]
         chunk_vectorizer = TfidfVectorizer(stop_words='english')
         chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
         st.session_state.chunk_vectorizer = chunk_vectorizer
@@ -85,6 +95,22 @@ if "doc_metadata" not in st.session_state:
 with st.sidebar:
     st.header("Document Management")
     
+    # Retrieval settings (fixed)
+    st.subheader("Retrieval Settings")
+    st.info("Using fixed retrieval settings: chunk_size=800, overlap=150, summaries=3 sentences, using summaries=True, top_chunks=6")
+
+    # Ensure defaults are set in session state (immutable by UI)
+    if 'chunk_size' not in st.session_state:
+        st.session_state.chunk_size = 800
+    if 'overlap' not in st.session_state:
+        st.session_state.overlap = 150
+    if 'summary_sentences' not in st.session_state:
+        st.session_state.summary_sentences = 3
+    if 'use_summaries' not in st.session_state:
+        st.session_state.use_summaries = True
+    if 'k_chunks' not in st.session_state:
+        st.session_state.k_chunks = 6
+
     # Display document count
     if st.session_state.documents:
         st.metric("Total Documents", len(st.session_state.documents))
@@ -153,6 +179,8 @@ with st.sidebar:
                         chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
                         st.session_state.chunk_vectorizer = chunk_vectorizer
                         st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
+                        # Notify user that index was auto-rebuilt after deletion
+                        st.success(f"Auto-rebuilt index with {len(chunks)} chunks after deletion")
                     else:
                         # Clear vectorizer and chunks if no documents
                         if 'vectorizer' in st.session_state:
@@ -167,6 +195,8 @@ with st.sidebar:
                             del st.session_state.chunk_vectorizer
                         if 'chunk_tfidf_matrix' in st.session_state:
                             del st.session_state.chunk_tfidf_matrix
+                        # Inform user that documents were cleared and index rebuilt (empty)
+                        st.success("Cleared all documents and rebuilt an empty index")
                     
                     st.rerun()
         
@@ -392,22 +422,36 @@ if st.button("Load Zotero Library", type="primary"):
                         st.session_state.vectorizer = vectorizer
                         st.session_state.tfidf_matrix = tfidf_matrix
                         
-                        # Create chunks for better retrieval
-                        chunks, doc_id_mapping = create_chunked_documents(all_documents, all_doc_ids, all_doc_metadata)
+                        # Create chunks for better retrieval using current settings
+                        chunk_size = st.session_state.get('chunk_size', 800)
+                        overlap = st.session_state.get('overlap', 150)
+                        summary_sentences = st.session_state.get('summary_sentences', 3)
+                        use_summaries = st.session_state.get('use_summaries', True)
+
+                        chunks, doc_id_mapping = create_chunked_documents(
+                            all_documents, all_doc_ids, all_doc_metadata,
+                            chunk_size=chunk_size,
+                            overlap=overlap,
+                            summary_sentences=summary_sentences
+                        )
                         st.session_state.chunks = chunks
                         st.session_state.doc_id_mapping = doc_id_mapping
                         
-                        # Create TF-IDF matrix for chunks
-                        chunk_texts = [chunk['text'] for chunk in chunks]
+                        # Use summaries or full text for chunk indexing
+                        chunk_texts = [c['summary'] if use_summaries else c['text'] for c in chunks]
                         chunk_vectorizer = TfidfVectorizer(stop_words='english')
                         chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
                         st.session_state.chunk_vectorizer = chunk_vectorizer
                         st.session_state.chunk_tfidf_matrix = chunk_tfidf_matrix
+                        # Notify user about auto-rebuild
+                        st.success(f"Auto-rebuilt index with {len(chunks)} chunks")
 
                     message = f"Loaded {new_count} new documents from Zotero (Total: {len(all_documents)} documents)"
                     if duplicates:
                         message += f". Skipped {len(duplicates)} duplicate(s)."
                     st.success(message)
+                    if 'chunks' in st.session_state:
+                        st.info(f"Index contains {len(st.session_state.chunks)} chunks; using summaries: {st.session_state.get('use_summaries', True)}")
                     st.rerun()
             except Exception as e:
                 st.error(f"Error loading Zotero library: {str(e)}")
@@ -470,23 +514,27 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
     else:
         try:
             # Retrieve relevant chunks using smart retrieval
+            k_chunks = st.session_state.get('k_chunks', 6)
+            similarity_threshold = 0.05
+
             relevant_chunks, seen_docs = retrieve_relevant_chunks(
                 prompt,
                 st.session_state.chunk_vectorizer,
                 st.session_state.chunk_tfidf_matrix,
                 st.session_state.chunks,
                 st.session_state.doc_id_mapping,
-                k=8,  # Retrieve top 8 chunks
-                similarity_threshold=0.05
+                k=k_chunks,
+                similarity_threshold=similarity_threshold
             )
             
-            # Format context from chunks
-            context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs)
+            # Format context from chunks (use summaries if enabled)
+            use_summaries = st.session_state.get('use_summaries', True)
+            context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
             
             if not context or context == "":
                 context = "No relevant documents found."
 
-            # Prompt OpenAI with full chunk content
+            # Prompt OpenAI with condensed chunk content (summaries may be used to reduce tokens)
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
