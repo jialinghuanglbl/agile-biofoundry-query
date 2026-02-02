@@ -119,6 +119,18 @@ def remove_article(zotero_id: str) -> Tuple[bool, str]:
     return True, f"Article '{title}' removed"
 
 
+def rename_article(zotero_id: str, new_title: str) -> Tuple[bool, str]:
+    """Rename an article's title in storage"""
+    articles_data = load_articles()
+    
+    if not article_exists(zotero_id, articles_data):
+        return False, "Article not found"
+    
+    articles_data["metadata"][zotero_id]["title"] = new_title
+    save_articles(articles_data)
+    return True, f"Article '{zotero_id}' renamed to '{new_title}'"
+
+
 def clear_all_articles() -> str:
     """Clear all stored articles"""
     save_articles({"articles": [], "metadata": {}})

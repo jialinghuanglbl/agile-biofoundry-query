@@ -17,7 +17,8 @@ from article_storage import (
     get_all_articles,
     remove_article,
     clear_all_articles,
-    get_article_count
+    get_article_count,
+    rename_article
 )
 from document_retrieval import (
     create_chunked_documents,
@@ -143,7 +144,6 @@ with st.sidebar:
     
     # Retrieval settings (fixed)
     st.subheader("Retrieval Settings")
-    st.info("Using fixed retrieval settings: chunk_size=800, overlap=150, summaries=3 sentences, using summaries=True, top_chunks=6")
 
     # Ensure defaults are set in session state (immutable by UI)
     if 'chunk_size' not in st.session_state:
@@ -193,6 +193,19 @@ with st.sidebar:
                 preview = st.session_state.documents[idx][:300]
                 st.text_area("Preview", preview, height=100, disabled=True, key=f"preview_{idx}")
                 
+                # Rename controls
+                rename_default = st.session_state.doc_metadata[idx].get('title', 'Untitled')
+                new_title = st.text_input("Rename title", value=rename_default, key=f"rename_input_{idx}")
+                if st.button("Rename", key=f"rename_{idx}"):
+                    zotero_id = st.session_state.doc_ids[idx]
+                    success, msg = rename_article(zotero_id, new_title)
+                    if success:
+                        st.session_state.doc_metadata[idx]['title'] = new_title
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
                 # Delete button
                 if st.button(f"Delete", key=f"delete_{idx}"):
                     # Remove from storage
@@ -220,7 +233,8 @@ with st.sidebar:
                         st.session_state.chunks = chunks
                         st.session_state.doc_id_mapping = doc_id_mapping
                         
-                        chunk_texts = [chunk['text'] for chunk in chunks]
+                        use_summaries = st.session_state.get('use_summaries', True)
+                        chunk_texts = [c['summary'] if use_summaries and c.get('summary') else c['text'] for c in chunks]
                         chunk_vectorizer = TfidfVectorizer(stop_words='english')
                         chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
                         st.session_state.chunk_vectorizer = chunk_vectorizer
@@ -268,6 +282,8 @@ with st.sidebar:
                     del st.session_state.chunk_vectorizer
                 if 'chunk_tfidf_matrix' in st.session_state:
                     del st.session_state.chunk_tfidf_matrix
+                # Inform user about auto-rebuild (empty index)
+                st.success("Cleared all documents and rebuilt an empty index")
                 st.rerun()
         
         with col2:
@@ -549,26 +565,20 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# User input
-if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    if "documents" not in st.session_state or not st.session_state.documents or not openai_api_key:
-        response = "Please load the Zotero library and ensure OpenAI API key is set in secrets."
-    else:
-        try:
-            # Ensure chunk index exists; auto-rebuild if missing
+# If there's a pending prompt being processed, handle it here (so the UI shows a typing placeholder immediately after submission)
+if st.session_state.get('processing') and st.session_state.get('pending_prompt'):
+    pending = st.session_state.get('pending_prompt')
+    try:
+        with st.spinner("Assistant is typing..."):
+            # Ensure index exists
             if not ensure_chunk_index():
-                response = "No indexed documents available to answer the query. Please load the Zotero library."
+                result = "No indexed documents available to answer the query. Please load the Zotero library."
             else:
-                # Retrieve relevant chunks using smart retrieval
                 k_chunks = st.session_state.get('k_chunks', 6)
                 similarity_threshold = 0.05
 
                 relevant_chunks, seen_docs = retrieve_relevant_chunks(
-                    prompt,
+                    pending,
                     st.session_state.chunk_vectorizer,
                     st.session_state.chunk_tfidf_matrix,
                     st.session_state.chunks,
@@ -576,32 +586,52 @@ if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
                     k=k_chunks,
                     similarity_threshold=similarity_threshold
                 )
-                
-                # Format context from chunks (use summaries if enabled)
+
                 use_summaries = st.session_state.get('use_summaries', True)
                 context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
-                
+
                 if not context or context == "":
                     context = "No relevant documents found."
 
-                # Prompt OpenAI with condensed chunk content (summaries may be used to reduce tokens)
-                response = client.chat.completions.create(
+                result = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query comprehensively."},
-                        {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {prompt}"}
+                        {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {pending}"}
                     ]
                 ).choices[0].message.content
-                
-                # Add citations if documents were used
+
                 if cited_docs:
-                    response += "\n\n---\n**Sources:**\n"
+                    result += "\n\n---\n**Sources:**\n"
                     for doc in cited_docs:
-                        response += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                        result += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+    except Exception as e:
+        result = f"Error generating response: {str(e)}"
 
-        except Exception as e:
-            response = f"Error generating response: {str(e)}"
+    # Replace the placeholder assistant message with the actual result
+    assistant_idx = st.session_state.get('pending_assistant_index')
+    if assistant_idx is not None and assistant_idx < len(st.session_state.messages):
+        st.session_state.messages[assistant_idx]['content'] = result
+    else:
+        st.session_state.messages.append({"role": "assistant", "content": result})
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    with st.chat_message("assistant"):
-        st.markdown(response)
+    # Clear pending flags and stop processing
+    st.session_state.pending_prompt = None
+    st.session_state.pending_assistant_index = None
+    st.session_state.processing = False
+
+    st.rerun()
+
+# User input
+if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
+    # Append user's message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Add assistant placeholder and mark processing, then rerun so the UI shows placeholder immediately
+    st.session_state.messages.append({"role": "assistant", "content": "...typing..."})
+    st.session_state.pending_prompt = prompt
+    st.session_state.pending_assistant_index = len(st.session_state.messages) - 1
+    st.session_state.processing = True
+    st.rerun()
