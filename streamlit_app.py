@@ -86,15 +86,21 @@ def ensure_chunk_index() -> bool:
 # Streamlit app
 st.title("Agile Biofoundry Zotero Query App")
 
-# Load credentials from secrets
-zotero_library_id = st.secrets["zotero_library_id"]
-zotero_api_key = st.secrets["zotero_api_key"]
-zotero_library_type = st.secrets["zotero_library_type"]
-openai_api_key = st.secrets["openai_api_key"]
-zotero_collection_key = st.secrets.get("zotero_collection_key", "")  # Optional
+# Load credentials from secrets safely (handle case where no secrets file is present)
+def _safe_secret(name: str) -> str:
+    try:
+        return st.secrets[name]
+    except Exception:
+        return ""
 
-# Initialize OpenAI client AFTER loading the API key
-client = OpenAI(api_key=openai_api_key)
+zotero_library_id = _safe_secret("zotero_library_id")
+zotero_api_key = _safe_secret("zotero_api_key")
+zotero_library_type = _safe_secret("zotero_library_type")
+openai_api_key = _safe_secret("openai_api_key")
+zotero_collection_key = _safe_secret("zotero_collection_key")  # Optional
+
+# Initialize OpenAI client ONLY if API key is present
+client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 
 # Initialize session state for documents
 if "documents" not in st.session_state:
@@ -593,18 +599,21 @@ if st.session_state.get('processing') and st.session_state.get('pending_prompt')
                 if not context or context == "":
                     context = "No relevant documents found."
 
-                result = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query comprehensively."},
-                        {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {pending}"}
-                    ]
-                ).choices[0].message.content
+                if client is None:
+                    result = "OpenAI API key is not set. Please add it to Streamlit secrets to enable the assistant."
+                else:
+                    result = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query comprehensively."},
+                            {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {pending}"}
+                        ]
+                    ).choices[0].message.content
 
-                if cited_docs:
-                    result += "\n\n---\n**Sources:**\n"
-                    for doc in cited_docs:
-                        result += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                    if cited_docs:
+                        result += "\n\n---\n**Sources:**\n"
+                        for doc in cited_docs:
+                            result += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
     except Exception as e:
         result = f"Error generating response: {str(e)}"
 
