@@ -64,7 +64,9 @@ def save_articles(data: Dict, collection_name: str = "default") -> None:
     
     # Try to commit to git for Streamlit Cloud persistence
     if GIT_ENABLED:
-        auto_commit_changes(collection_name, f"Update {collection_name} articles")
+        success = auto_commit_changes(collection_name, f"Update {collection_name} articles")
+        # Note: auto_commit_changes now requires BOTH commit AND push to succeed
+        # If it returns False, files are still saved locally but not synced to GitHub
 
 
 def article_exists(zotero_id: str, articles_data: Dict = None, collection_name: str = "default") -> bool:

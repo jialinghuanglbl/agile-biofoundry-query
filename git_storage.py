@@ -74,38 +74,53 @@ def _configure_git_if_needed() -> bool:
 def _ensure_github_token() -> bool:
     """
     Ensure GitHub token is configured for pushing.
-    Creates a .netrc file so git can authenticate to GitHub.
+    Tries multiple sources: environment, Streamlit secrets, .netrc
     """
     try:
+        # Try multiple sources for the token (in priority order)
         github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("github_token")
+        
+        # Fallback: try Streamlit secrets if token not in environment
+        if not github_token:
+            try:
+                # Only import if needed, to avoid issues in non-Streamlit contexts
+                import sys
+                if 'streamlit' in sys.modules:
+                    import streamlit as st
+                    try:
+                        github_token = st.secrets.get("github_token")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         
         if not github_token:
             return False  # No token available
         
-        # Create .netrc file for GitHub authentication
-        # This is the standard way git authenticates to HTTPS remotes
-        netrc_path = os.path.expanduser("~/.netrc")
+        # Store in environment for subprocess calls
+        os.environ["GITHUB_TOKEN"] = github_token
         
-        # Check if .netrc already has github.com entry
-        has_github = False
-        if os.path.exists(netrc_path):
-            try:
-                with open(netrc_path, 'r') as f:
-                    has_github = 'github.com' in f.read()
-            except Exception:
-                pass
-        
-        if not has_github:
-            try:
-                # Create .netrc with GitHub token
-                # Format: machine github.com login git password TOKEN
-                with open(netrc_path, 'a') as f:
+        # Create .netrc file for git authentication
+        try:
+            netrc_path = os.path.expanduser("~/.netrc")
+            
+            has_github = False
+            if os.path.exists(netrc_path):
+                try:
+                    with open(netrc_path, 'r') as f:
+                        content = f.read()
+                        has_github = 'github.com' in content
+                except Exception:
+                    pass
+            
+            if not has_github:
+                # Append github creds to .netrc
+                with open(netrc_path, 'a' if os.path.exists(netrc_path) else 'w') as f:
                     f.write(f"\nmachine github.com\nlogin git\npassword {github_token}\n")
-                
-                # Make it readable only by owner (required by git)
                 os.chmod(netrc_path, 0o600)
-            except Exception:
-                pass
+        except Exception:
+            # .netrc creation failed; continue with other methods
+            pass
         
         return True
     except Exception:
@@ -132,13 +147,14 @@ def _git_configured() -> bool:
 def auto_commit_changes(collection_name: str, message: str) -> bool:
     """
     Automatically commit changes to git (for Streamlit Cloud persistence)
+    Commits locally and PUSHES to GitHub immediately.
     
     Args:
         collection_name: Name of the collection that changed
         message: Commit message
     
     Returns:
-        True if commit succeeded, False otherwise
+        True if both commit AND push succeeded, False otherwise
     """
     if not _git_configured():
         # Git not configured - silently fail, fall back to file storage only
@@ -148,13 +164,13 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
         repo_root = _get_repo_root()
         data_dir = _get_data_dir()
         
-        # Set up environment with GitHub token for authentication
+        # Set up environment with GitHub token and auth settings
         env = os.environ.copy()
         github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("github_token")
         if github_token:
-            # Tell git to use token for HTTPS auth
-            env['GIT_ASKPASS'] = 'echo'  # Don't prompt for password
-            env['GIT_ASKPASS_ARGS'] = github_token  # Provide token as password
+            # These help git authenticate without prompting
+            env['GIT_ASKPASS_ARGS'] = github_token
+            env['GIT_TERMINAL_PROMPT'] = '0'  # Don't prompt for input
         
         # Stage the article file
         article_file = os.path.join(data_dir, f"zotero_articles_{collection_name}.json")
@@ -178,8 +194,12 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
             env=env
         )
         
-        if result.stdout.strip():
-            # There are changes; commit them
+        if not result.stdout.strip():
+            # No changes to commit
+            return False
+        
+        # Commit the changes
+        try:
             subprocess.run(
                 ["git", "commit", "-m", message],
                 cwd=repo_root,
@@ -188,29 +208,45 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
                 check=True,
                 env=env
             )
-            
-            # Try to push with explicit branch specification
-            for branch in ["main", "master"]:
-                try:
-                    push_result = subprocess.run(
-                        ["git", "push", "origin", branch],
-                        cwd=repo_root,
-                        capture_output=True,
-                        text=True,
-                        timeout=15,
-                        env=env
-                    )
-                    if push_result.returncode == 0:
-                        return True
-                except Exception:
-                    continue
-            
-            return True  # Return True if commit succeeded, even if push failed
+        except subprocess.CalledProcessError:
+            # Commit failed (maybe nothing staged)
+            return False
         
-        return False
+        # NOW: PUSH to GitHub immediately
+        # This is critical for Streamlit Cloud persistence
+        push_succeeded = False
+        
+        for branch in ["main", "master"]:
+            try:
+                push_result = subprocess.run(
+                    ["git", "push", "-u", "origin", branch],
+                    cwd=repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    env=env
+                )
+                
+                if push_result.returncode == 0:
+                    push_succeeded = True
+                    break
+                else:
+                    # Push failed; check stderr for details
+                    error_msg = push_result.stderr
+                    if "Authentication failed" in error_msg or "401" in error_msg:
+                        # Auth failed; token might be wrong/expired
+                        continue
+            except subprocess.TimeoutExpired:
+                # Push timed out; try next branch
+                continue
+            except Exception:
+                # Other error; try next branch
+                continue
+        
+        return push_succeeded
     
     except Exception as e:
-        # Git operations failed; fall back to file-only storage
+        # Git operations failed completely
         return False
 
 

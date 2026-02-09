@@ -153,6 +153,15 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
 st.set_page_config(page_title="Agile Biofoundry & ABPDU Query Tool", layout="wide")
 st.title("Agile Biofoundry & ABPDU Query Tool")
 
+# Set GitHub token in environment so git_storage can use it
+# (Streamlit Cloud stores secrets but they need to be passed to subprocesses)
+try:
+    github_token = _safe_secret("github_token")
+    if github_token:
+        os.environ["GITHUB_TOKEN"] = github_token
+except Exception:
+    pass
+
 # On Streamlit Cloud: pull latest article data from git on startup
 try:
     from git_storage import pull_latest_articles
