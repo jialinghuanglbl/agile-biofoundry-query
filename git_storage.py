@@ -74,44 +74,38 @@ def _configure_git_if_needed() -> bool:
 def _ensure_github_token() -> bool:
     """
     Ensure GitHub token is configured for pushing.
-    Sets up git credentials if GITHUB_TOKEN is in environment.
+    Creates a .netrc file so git can authenticate to GitHub.
     """
     try:
-        github_token = os.environ.get("GITHUB_TOKEN")
-        if not github_token:
-            # Try to get from Streamlit secrets (passed via env by Streamlit Cloud)
-            github_token = os.environ.get("github_token")
+        github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("github_token")
         
         if not github_token:
             return False  # No token available
         
-        repo_root = _get_repo_root()
+        # Create .netrc file for GitHub authentication
+        # This is the standard way git authenticates to HTTPS remotes
+        netrc_path = os.path.expanduser("~/.netrc")
         
-        # Configure git to use token for HTTPS authentication
-        # This sets up the credential helper to use the token
-        result = subprocess.run(
-            ["git", "config", "credential.helper", "store"],
-            cwd=repo_root,
-            capture_output=True,
-            timeout=5
-        )
+        # Check if .netrc already has github.com entry
+        has_github = False
+        if os.path.exists(netrc_path):
+            try:
+                with open(netrc_path, 'r') as f:
+                    has_github = 'github.com' in f.read()
+            except Exception:
+                pass
         
-        # Also try to configure the remote URL to use token
-        try:
-            # Get current remote
-            remote_result = subprocess.run(
-                ["git", "config", "remote.origin.url"],
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if remote_result.returncode == 0:
-                remote_url = remote_result.stdout.strip()
-                # If it's a regular HTTPS URL, we can use token auth
-                # Git will use the GITHUB_TOKEN environment variable
-        except Exception:
-            pass
+        if not has_github:
+            try:
+                # Create .netrc with GitHub token
+                # Format: machine github.com login git password TOKEN
+                with open(netrc_path, 'a') as f:
+                    f.write(f"\nmachine github.com\nlogin git\npassword {github_token}\n")
+                
+                # Make it readable only by owner (required by git)
+                os.chmod(netrc_path, 0o600)
+            except Exception:
+                pass
         
         return True
     except Exception:
@@ -154,6 +148,14 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
         repo_root = _get_repo_root()
         data_dir = _get_data_dir()
         
+        # Set up environment with GitHub token for authentication
+        env = os.environ.copy()
+        github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("github_token")
+        if github_token:
+            # Tell git to use token for HTTPS auth
+            env['GIT_ASKPASS'] = 'echo'  # Don't prompt for password
+            env['GIT_ASKPASS_ARGS'] = github_token  # Provide token as password
+        
         # Stage the article file
         article_file = os.path.join(data_dir, f"zotero_articles_{collection_name}.json")
         if os.path.exists(article_file):
@@ -162,7 +164,8 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
                 cwd=repo_root,
                 capture_output=True,
                 timeout=10,
-                check=True
+                check=True,
+                env=env
             )
         
         # Check if there are changes to commit
@@ -171,7 +174,8 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
             cwd=repo_root,
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
+            env=env
         )
         
         if result.stdout.strip():
@@ -181,21 +185,27 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
                 cwd=repo_root,
                 capture_output=True,
                 timeout=10,
-                check=True
+                check=True,
+                env=env
             )
             
-            # Try to push (may fail if no upstream, but that's OK)
-            try:
-                subprocess.run(
-                    ["git", "push"],
-                    cwd=repo_root,
-                    capture_output=True,
-                    timeout=15
-                )
-            except Exception:
-                pass  # Push failed, but commit succeeded
+            # Try to push with explicit branch specification
+            for branch in ["main", "master"]:
+                try:
+                    push_result = subprocess.run(
+                        ["git", "push", "origin", branch],
+                        cwd=repo_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        env=env
+                    )
+                    if push_result.returncode == 0:
+                        return True
+                except Exception:
+                    continue
             
-            return True
+            return True  # Return True if commit succeeded, even if push failed
         
         return False
     
@@ -236,16 +246,54 @@ def pull_latest_articles() -> bool:
     try:
         repo_root = _get_repo_root()
         
-        # Pull the latest changes
-        result = subprocess.run(
-            ["git", "pull", "origin", "main"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=15
-        )
+        # Set up environment with GitHub token
+        env = os.environ.copy()
+        github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("github_token")
+        if github_token:
+            env['GIT_AUTH_HELPER'] = 'netrc'
         
-        return result.returncode == 0
+        # First, ensure we're on the right branch
+        for branch in ["main", "master"]:
+            try:
+                subprocess.run(
+                    ["git", "checkout", branch],
+                    cwd=repo_root,
+                    capture_output=True,
+                    timeout=10,
+                    env=env
+                )
+                break
+            except Exception:
+                continue
+        
+        # Fetch to get latest from remote
+        try:
+            subprocess.run(
+                ["git", "fetch", "origin"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=env
+            )
+        except Exception:
+            pass
+        
+        # Try to pull the latest changes
+        for branch in ["main", "master"]:
+            result = subprocess.run(
+                ["git", "pull", "--ff-only", "origin", branch],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=env
+            )
+            
+            if result.returncode == 0:
+                return True
+        
+        return False
     
     except Exception as e:
         return False
