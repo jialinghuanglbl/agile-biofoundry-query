@@ -150,8 +150,8 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
 
 # ==================== MAIN APP ====================
 
-st.set_page_config(page_title="Agile Biofoundry Zotero Query", layout="wide")
-st.title("Agile Biofoundry Zotero Query App")
+st.set_page_config(page_title="Agile Biofoundry & ABPDU Query Tool", layout="wide")
+st.title("Agile Biofoundry & ABPDU Query Tool")
 
 # Load credentials from secrets
 zotero_library_id = _safe_secret("zotero_library_id")

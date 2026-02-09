@@ -9,8 +9,16 @@ import os
 from typing import List, Dict, Tuple
 
 def _get_articles_file(collection_name: str = "default") -> str:
-    """Get the file path for a specific collection"""
-    return os.path.join(os.path.dirname(__file__), f"zotero_articles_{collection_name}.json")
+    """Get the file path for a specific collection.
+
+    Files are stored in a workspace-level `zotero_data/` directory so they
+    persist across Streamlit restarts and are easy to locate. You can override
+    the base directory with the `WORKSPACE_DIR` environment variable.
+    """
+    workspace = os.environ.get("WORKSPACE_DIR") or os.getcwd()
+    data_dir = os.path.join(workspace, "zotero_data")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, f"zotero_articles_{collection_name}.json")
 
 
 def load_articles(collection_name: str = "default") -> Dict:
@@ -26,8 +34,12 @@ def load_articles(collection_name: str = "default") -> Dict:
 
 
 def save_articles(data: Dict, collection_name: str = "default") -> None:
-    """Save articles to persistent storage using an atomic write for a specific collection."""
+    """Save articles to persistent storage using an atomic write for a
+    specific collection.
+    """
     articles_file = _get_articles_file(collection_name)
+    # Ensure parent dir exists (should already) and write atomically
+    os.makedirs(os.path.dirname(articles_file), exist_ok=True)
     tmp_path = articles_file + ".tmp"
     with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
