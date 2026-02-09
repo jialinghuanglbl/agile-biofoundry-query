@@ -12,10 +12,17 @@ def _get_articles_file(collection_name: str = "default") -> str:
     """Get the file path for a specific collection.
 
     Files are stored in a workspace-level `zotero_data/` directory so they
-    persist across Streamlit restarts and are easy to locate. You can override
-    the base directory with the `WORKSPACE_DIR` environment variable.
+    persist across Streamlit restarts. The path is determined by:
+    1. WORKSPACE_DIR environment variable (if set)
+    2. Otherwise, the directory containing this module (the repo root)
     """
-    workspace = os.environ.get("WORKSPACE_DIR") or os.getcwd()
+    # Try environment variable first
+    workspace = os.environ.get("WORKSPACE_DIR")
+    
+    # If not set, use the directory of this module (repo root)
+    if not workspace:
+        workspace = os.path.dirname(os.path.abspath(__file__))
+    
     data_dir = os.path.join(workspace, "zotero_data")
     os.makedirs(data_dir, exist_ok=True)
     return os.path.join(data_dir, f"zotero_articles_{collection_name}.json")

@@ -180,6 +180,24 @@ for col_info in COLLECTIONS:
 
 # ==================== SIDEBAR: DOCUMENT MANAGEMENT ====================
 with st.sidebar:
+    # Debug: Show storage path
+    import os
+    from article_storage import _get_articles_file
+    debug_path = _get_articles_file("agile")
+    debug_dir = os.path.dirname(debug_path)
+    with st.expander("Storage Info", expanded=False):
+        st.caption(f"**Storage Location:**")
+        st.code(debug_dir, language="text")
+        st.caption(f"**Files:**")
+        if os.path.exists(debug_dir):
+            files = os.listdir(debug_dir)
+            if files:
+                for f in files:
+                    st.text(f"✓ {f}")
+            else:
+                st.text("(none)")
+        else:
+            st.text("(directory not created yet)")
     st.header("Collections & Documents")
     
     for col_info in COLLECTIONS:
