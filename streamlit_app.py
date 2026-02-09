@@ -153,6 +153,13 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
 st.set_page_config(page_title="Agile Biofoundry & ABPDU Query Tool", layout="wide")
 st.title("Agile Biofoundry & ABPDU Query Tool")
 
+# On Streamlit Cloud: pull latest article data from git on startup
+try:
+    from git_storage import pull_latest_articles
+    pull_latest_articles()  # Silent operation; fails gracefully if git unavailable
+except ImportError:
+    pass  # Git storage not available (local dev or offline)
+
 # Load credentials from secrets
 zotero_library_id = _safe_secret("zotero_library_id")
 zotero_api_key = _safe_secret("zotero_api_key")
@@ -190,13 +197,20 @@ with st.sidebar:
         st.caption(f"**Storage Location:**")
         st.code(debug_dir, language="text")
         
-        # Show if using fallback or ephemeral mount
-        if "/mount" in debug_dir or "/home" in debug_dir:
-            st.warning(
-                "**Ephemeral storage detected.** Files may not persist across restarts. "
-                "For production, use cloud storage (S3) or a database backend. "
-                "Contact your admin about persistent storage options."
-            )
+        # Explain persistence mechanism
+        st.caption("**Persistence Method:**")
+        st.markdown("""
+**Streamlit Cloud:**
+- Articles stored in repo's `zotero_data/` directory
+- Auto-committed to GitHub after each change
+- Pulled on app startup to restore articles
+
+**Local Development:**
+- Articles stored in `zotero_data/` directory on your machine
+- Persists across restarts naturally
+
+**Note:** Keep the `zotero_data/` directory committed to git for cloud persistence.
+        """)
         
         st.caption(f"**Files:**")
         if os.path.exists(debug_dir):

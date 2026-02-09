@@ -2,45 +2,36 @@
 Article Storage Module
 Handles persistent storage of Zotero articles and prevents duplicates
 Supports multiple collections with separate storage files
+
+For Streamlit Cloud: Articles are stored in the repo and auto-committed to git.
+For local dev: Articles stored in ./zotero_data/
 """
 
 import json
 import os
 from typing import List, Dict, Tuple
 
+# Try to import git-based persistence (for Streamlit Cloud)
+try:
+    from git_storage import _get_data_dir, auto_commit_changes
+    GIT_ENABLED = True
+except ImportError:
+    GIT_ENABLED = False
+    def _get_data_dir():
+        """Fallback: store in repo root"""
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "zotero_data")
+
+
 def _get_articles_file(collection_name: str = "default") -> str:
     """Get the file path for a specific collection.
 
-    Files are stored in a `zotero_data/` directory using multiple fallback locations:
-    1. WORKSPACE_DIR environment variable (if set)
-    2. The repo root (if NOT in /mount - works in local dev)
-    3. Home directory (~/ - but also ephemeral in cloud)
+    Files are stored in the repo's `zotero_data/` directory and auto-committed
+    to git when changes occur (for Streamlit Cloud persistence).
     
-    NOTE: In cloud environments (Streamlit Cloud, ephemeral containers),
-    ALL filesystem storage is ephemeral and will be wiped on restart.
-    For true persistence in cloud, you must use external storage 
-    (e.g., S3, database, Firebase). Contact your admin for cloud deployment.
+    On local development, files are simply stored on disk.
+    On Streamlit Cloud, files are committed to git for persistence across restarts.
     """
-    import pathlib
-    
-    # Try environment variable first
-    workspace = os.environ.get("WORKSPACE_DIR")
-    
-    if not workspace:
-        module_path = os.path.dirname(os.path.abspath(__file__))
-        
-        # Check if we're in an ephemeral mount (e.g., /mount/src in Streamlit Cloud)
-        # These paths get refreshed on restart, so we need a fallback
-        if "/mount" in module_path:
-            # /mount/src is ephemeral; use home directory instead
-            # (though /home is also ephemeral in most cloud environments)
-            workspace = os.path.expanduser("~")
-        else:
-            # Use the module's directory (repo root) if it's not ephemeral
-            workspace = module_path
-    
-    data_dir = os.path.join(workspace, "zotero_data")
-    os.makedirs(data_dir, exist_ok=True)
+    data_dir = _get_data_dir()
     return os.path.join(data_dir, f"zotero_articles_{collection_name}.json")
 
 
@@ -58,7 +49,7 @@ def load_articles(collection_name: str = "default") -> Dict:
 
 def save_articles(data: Dict, collection_name: str = "default") -> None:
     """Save articles to persistent storage using an atomic write for a
-    specific collection.
+    specific collection. Also commits to git if enabled.
     """
     articles_file = _get_articles_file(collection_name)
     # Ensure parent dir exists (should already) and write atomically
@@ -70,6 +61,10 @@ def save_articles(data: Dict, collection_name: str = "default") -> None:
         os.fsync(f.fileno())
     # Atomically replace
     os.replace(tmp_path, articles_file)
+    
+    # Try to commit to git for Streamlit Cloud persistence
+    if GIT_ENABLED:
+        auto_commit_changes(collection_name, f"Update {collection_name} articles")
 
 
 def article_exists(zotero_id: str, articles_data: Dict = None, collection_name: str = "default") -> bool:
