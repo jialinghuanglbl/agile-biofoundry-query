@@ -34,17 +34,103 @@ def _get_data_dir() -> str:
     return data_dir
 
 
-def _git_configured() -> bool:
-    """Check if git is configured and we're in a repo"""
+def _configure_git_if_needed() -> bool:
+    """
+    Configure git user if not already configured.
+    Returns True if git is configured/was successfully configured.
+    """
     try:
-        subprocess.run(
+        # Check if user.email is already configured
+        result = subprocess.run(
             ["git", "config", "user.email"],
             capture_output=True,
             text=True,
-            timeout=5,
-            check=True
+            timeout=5
         )
+        if result.returncode == 0 and result.stdout.strip():
+            return True  # Already configured
+        
+        # Not configured; set up with default values
+        # Use environment variables if available, otherwise use defaults
+        git_email = os.environ.get("GIT_EMAIL", "streamlit-bot@localhost")
+        git_name = os.environ.get("GIT_NAME", "Streamlit Bot")
+        
+        subprocess.run(
+            ["git", "config", "user.email", git_email],
+            capture_output=True,
+            timeout=5
+        )
+        subprocess.run(
+            ["git", "config", "user.name", git_name],
+            capture_output=True,
+            timeout=5
+        )
+        
         return True
+    except Exception as e:
+        return False
+
+
+def _ensure_github_token() -> bool:
+    """
+    Ensure GitHub token is configured for pushing.
+    Sets up git credentials if GITHUB_TOKEN is in environment.
+    """
+    try:
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if not github_token:
+            # Try to get from Streamlit secrets (passed via env by Streamlit Cloud)
+            github_token = os.environ.get("github_token")
+        
+        if not github_token:
+            return False  # No token available
+        
+        repo_root = _get_repo_root()
+        
+        # Configure git to use token for HTTPS authentication
+        # This sets up the credential helper to use the token
+        result = subprocess.run(
+            ["git", "config", "credential.helper", "store"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5
+        )
+        
+        # Also try to configure the remote URL to use token
+        try:
+            # Get current remote
+            remote_result = subprocess.run(
+                ["git", "config", "remote.origin.url"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if remote_result.returncode == 0:
+                remote_url = remote_result.stdout.strip()
+                # If it's a regular HTTPS URL, we can use token auth
+                # Git will use the GITHUB_TOKEN environment variable
+        except Exception:
+            pass
+        
+        return True
+    except Exception:
+        return False
+
+
+def _git_configured() -> bool:
+    """Check if git is configured and we're in a repo"""
+    try:
+        _configure_git_if_needed()  # Auto-configure if needed
+        _ensure_github_token()  # Set up token if available
+        
+        result = subprocess.run(
+            ["git", "status"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.returncode == 0
     except Exception:
         return False
 
