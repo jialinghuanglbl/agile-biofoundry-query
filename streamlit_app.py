@@ -190,9 +190,13 @@ with st.sidebar:
         st.caption(f"**Storage Location:**")
         st.code(debug_dir, language="text")
         
-        # Show if using fallback
-        if "/mount" in debug_dir:
-            st.info("Using home directory fallback (ephemeral mount detected)")
+        # Show if using fallback or ephemeral mount
+        if "/mount" in debug_dir or "/home" in debug_dir:
+            st.warning(
+                "**Ephemeral storage detected.** Files may not persist across restarts. "
+                "For production, use cloud storage (S3) or a database backend. "
+                "Contact your admin about persistent storage options."
+            )
         
         st.caption(f"**Files:**")
         if os.path.exists(debug_dir):
