@@ -151,7 +151,7 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
 # ==================== MAIN APP ====================
 
 st.set_page_config(page_title="Agile Biofoundry Zotero Query", layout="wide")
-st.title("🔍 Agile Biofoundry Zotero Query App")
+st.title("Agile Biofoundry Zotero Query App")
 
 # Load credentials from secrets
 zotero_library_id = _safe_secret("zotero_library_id")
@@ -178,17 +178,6 @@ if 'k_chunks' not in st.session_state:
 for col_info in COLLECTIONS:
     init_session_state_for_collection(col_info['collection_key'])
 
-# ==================== SIDEBAR ====================
-with st.sidebar:
-    st.header("⚙️ Settings")
-    
-    # Retrieval settings
-    st.subheader("Retrieval Settings")
-    st.caption("These settings apply to all collections")
-    st.metric("Chunk Size", f"{st.session_state.chunk_size} chars")
-    st.metric("Chunk Overlap", f"{st.session_state.overlap} chars")
-    st.metric("Max Chunks", st.session_state.k_chunks)
-    st.metric("Use Summaries", "Yes" if st.session_state.use_summaries else "No")
 # ==================== SIDEBAR: DOCUMENT MANAGEMENT ====================
 with st.sidebar:
     st.header("Collections & Documents")
@@ -335,156 +324,12 @@ for tab, col_info in zip(tabs, COLLECTIONS):
         
         st.header(f"{collection_name} Collection")
         
-        # ==================== DOCUMENT MANAGEMENT ====================
-        with st.expander("📖 Document Management", expanded=False):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.metric("Total Documents", len(st.session_state[f"{prefix}_documents"]))
-            
-            if st.session_state[f"{prefix}_documents"]:
-                # Search documents
-                search_term = st.text_input(f"Search {collection_name} documents", key=f"search_{collection_key}")
-                
-                # Filter documents
-                filtered_indices = []
-                for idx, metadata in enumerate(st.session_state[f"{prefix}_doc_metadata"]):
-                    title = metadata.get('title', 'Untitled')
-                    if search_term.lower() in title.lower():
-                        filtered_indices.append(idx)
-                
-                if not search_term:
-                    filtered_indices = list(range(len(st.session_state[f"{prefix}_doc_metadata"])))
-                
-                st.write(f"Showing {len(filtered_indices)} of {len(st.session_state[f'{prefix}_documents'])} documents")
-                
-                # Display each document
-                for idx in filtered_indices:
-                    metadata = st.session_state[f"{prefix}_doc_metadata"][idx]
-                    title = metadata.get('title', 'Untitled')
-                    item_type = metadata.get('itemType', 'Unknown')
-                    
-                    with st.expander(f"{title[:50]}{'...' if len(title) > 50 else ''}"):
-                        st.write(f"**Type:** {item_type}")
-                        st.write(f"**Zotero ID:** {st.session_state[f'{prefix}_doc_ids'][idx]}")
-                        
-                        # Preview
-                        preview = st.session_state[f"{prefix}_documents"][idx][:300]
-                        st.text_area("Preview", preview, height=100, disabled=True, key=f"preview_{collection_key}_{idx}")
-                        
-                        # Rename
-                        rename_default = metadata.get('title', 'Untitled')
-                        new_title = st.text_input("Rename title", value=rename_default, key=f"rename_input_{collection_key}_{idx}")
-                        if st.button("Rename", key=f"rename_{collection_key}_{idx}"):
-                            zotero_id = st.session_state[f"{prefix}_doc_ids"][idx]
-                            success, msg = rename_article(zotero_id, new_title, collection_key)
-                            if success:
-                                st.session_state[f"{prefix}_doc_metadata"][idx]['title'] = new_title
-                                st.success(msg)
-                                st.rerun()
-                            else:
-                                st.error(msg)
-                        
-                        # Delete
-                        if st.button(f"Delete", key=f"delete_{collection_key}_{idx}"):
-                            zotero_id = st.session_state[f"{prefix}_doc_ids"][idx]
-                            remove_article(zotero_id, collection_key)
-                            
-                            del st.session_state[f"{prefix}_documents"][idx]
-                            del st.session_state[f"{prefix}_doc_ids"][idx]
-                            del st.session_state[f"{prefix}_doc_metadata"][idx]
-                            
-                            # Rebuild index
-                            if st.session_state[f"{prefix}_documents"]:
-                                vectorizer = TfidfVectorizer(stop_words='english')
-                                tfidf_matrix = vectorizer.fit_transform(st.session_state[f"{prefix}_documents"])
-                                st.session_state[f"{prefix}_vectorizer"] = vectorizer
-                                st.session_state[f"{prefix}_tfidf_matrix"] = tfidf_matrix
-                                
-                                chunks, doc_id_mapping = create_chunked_documents(
-                                    st.session_state[f"{prefix}_documents"],
-                                    st.session_state[f"{prefix}_doc_ids"],
-                                    st.session_state[f"{prefix}_doc_metadata"]
-                                )
-                                st.session_state[f"{prefix}_chunks"] = chunks
-                                st.session_state[f"{prefix}_doc_id_mapping"] = doc_id_mapping
-                                
-                                use_summaries = st.session_state.get('use_summaries', True)
-                                chunk_texts = [c['summary'] if use_summaries and c.get('summary') else c['text'] for c in chunks]
-                                chunk_vectorizer = TfidfVectorizer(stop_words='english')
-                                chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
-                                st.session_state[f"{prefix}_chunk_vectorizer"] = chunk_vectorizer
-                                st.session_state[f"{prefix}_chunk_tfidf_matrix"] = chunk_tfidf_matrix
-                                st.success(f"Auto-rebuilt index with {len(chunks)} chunks after deletion")
-                            else:
-                                if f'{prefix}_vectorizer' in st.session_state:
-                                    del st.session_state[f'{prefix}_vectorizer']
-                                if f'{prefix}_tfidf_matrix' in st.session_state:
-                                    del st.session_state[f'{prefix}_tfidf_matrix']
-                                if f'{prefix}_chunks' in st.session_state:
-                                    del st.session_state[f'{prefix}_chunks']
-                                if f'{prefix}_doc_id_mapping' in st.session_state:
-                                    del st.session_state[f'{prefix}_doc_id_mapping']
-                                if f'{prefix}_chunk_vectorizer' in st.session_state:
-                                    del st.session_state[f'{prefix}_chunk_vectorizer']
-                                if f'{prefix}_chunk_tfidf_matrix' in st.session_state:
-                                    del st.session_state[f'{prefix}_chunk_tfidf_matrix']
-                                st.success("Cleared all documents and rebuilt an empty index")
-                            
-                            st.rerun()
-                
-                # Bulk actions
-                st.subheader("Bulk Actions")
-                col_a, col_b = st.columns(2)
-                
-                with col_a:
-                    if st.button("Clear All", type="secondary", key=f"clear_all_{collection_key}"):
-                        clear_all_articles(collection_key)
-                        st.session_state[f"{prefix}_documents"] = []
-                        st.session_state[f"{prefix}_doc_ids"] = []
-                        st.session_state[f"{prefix}_doc_metadata"] = []
-                        if f'{prefix}_vectorizer' in st.session_state:
-                            del st.session_state[f'{prefix}_vectorizer']
-                        if f'{prefix}_tfidf_matrix' in st.session_state:
-                            del st.session_state[f'{prefix}_tfidf_matrix']
-                        if f'{prefix}_chunks' in st.session_state:
-                            del st.session_state[f'{prefix}_chunks']
-                        if f'{prefix}_doc_id_mapping' in st.session_state:
-                            del st.session_state[f'{prefix}_doc_id_mapping']
-                        if f'{prefix}_chunk_vectorizer' in st.session_state:
-                            del st.session_state[f'{prefix}_chunk_vectorizer']
-                        if f'{prefix}_chunk_tfidf_matrix' in st.session_state:
-                            del st.session_state[f'{prefix}_chunk_tfidf_matrix']
-                        st.success("Cleared all documents and rebuilt an empty index")
-                        st.rerun()
-                
-                with col_b:
-                    if st.button("Export List", key=f"export_{collection_key}"):
-                        export_data = {
-                            "count": len(st.session_state[f"{prefix}_documents"]),
-                            "documents": [
-                                {
-                                    "zotero_id": st.session_state[f"{prefix}_doc_ids"][i],
-                                    "title": st.session_state[f"{prefix}_doc_metadata"][i].get('title', 'Untitled'),
-                                    "type": st.session_state[f"{prefix}_doc_metadata"][i].get('itemType', 'Unknown')
-                                }
-                                for i in range(len(st.session_state[f"{prefix}_documents"]))
-                            ]
-                        }
-                        st.download_button(
-                            label="Download JSON",
-                            data=json.dumps(export_data, indent=2),
-                            file_name=f"zotero_documents_{collection_key}.json",
-                            mime="application/json",
-                            key=f"download_{collection_key}"
-                        )
-            else:
-                st.info(f"No documents loaded yet for {collection_name}. Click 'Load Library' below to get started.")
+        
         
         # ==================== LOAD FROM ZOTERO ====================
         st.divider()
         
-        if st.button(f"📥 Load from Zotero - {collection_name}", type="primary", key=f"load_{collection_key}"):
+        if st.button(f"Load from Zotero - {collection_name}", type="primary", key=f"load_{collection_key}"):
             if not zotero_library_id or not zotero_api_key:
                 st.error("Zotero Library ID and API Key must be set in Streamlit secrets.")
             else:
@@ -708,7 +553,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
         
         # ==================== CHAT INTERFACE ====================
         st.divider()
-        st.header(f"💬 Query {collection_name}")
+        st.header(f"Query {collection_name}")
         
         # Initialize chat history for this collection
         if f"{prefix}_messages" not in st.session_state:
