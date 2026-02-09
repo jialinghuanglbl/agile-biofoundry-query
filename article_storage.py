@@ -1,34 +1,46 @@
 """
 Article Storage Module
 Handles persistent storage of Zotero articles and prevents duplicates
+Supports multiple collections with separate storage files
 """
 
 import json
 import os
 from typing import List, Dict, Tuple
 
-ARTICLES_FILE = "zotero_articles.json"
+def _get_articles_file(collection_name: str = "default") -> str:
+    """Get the file path for a specific collection"""
+    return os.path.join(os.path.dirname(__file__), f"zotero_articles_{collection_name}.json")
 
 
-def load_articles() -> Dict:
-    """Load articles from persistent storage"""
-    if os.path.exists(ARTICLES_FILE):
+def load_articles(collection_name: str = "default") -> Dict:
+    """Load articles from persistent storage for a specific collection"""
+    articles_file = _get_articles_file(collection_name)
+    if os.path.exists(articles_file):
         try:
-            with open(ARTICLES_FILE, 'r') as f:
+            with open(articles_file, 'r') as f:
                 return json.load(f)
         except json.JSONDecodeError:
             return {"articles": [], "metadata": {}}
     return {"articles": [], "metadata": {}}
 
 
-def save_articles(data: Dict) -> None:
-    """Save articles to persistent storage"""
-    with open(ARTICLES_FILE, 'w') as f:
+def save_articles(data: Dict, collection_name: str = "default") -> None:
+    """Save articles to persistent storage using an atomic write for a specific collection."""
+    articles_file = _get_articles_file(collection_name)
+    tmp_path = articles_file + ".tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    # Atomically replace
+    os.replace(tmp_path, articles_file)
 
 
-def article_exists(zotero_id: str, articles_data: Dict) -> bool:
+def article_exists(zotero_id: str, articles_data: Dict = None, collection_name: str = "default") -> bool:
     """Check if an article already exists by Zotero ID"""
+    if articles_data is None:
+        articles_data = load_articles(collection_name)
     return zotero_id in articles_data["metadata"]
 
 
@@ -37,7 +49,8 @@ def add_article(
     content: str,
     title: str,
     item_type: str,
-    abstract: str = ""
+    abstract: str = "",
+    collection_name: str = "default"
 ) -> Tuple[bool, str]:
     """
     Add an article to storage if it doesn't already exist
@@ -45,9 +58,9 @@ def add_article(
     Returns:
         Tuple of (success: bool, message: str)
     """
-    articles_data = load_articles()
+    articles_data = load_articles(collection_name)
     
-    if article_exists(zotero_id, articles_data):
+    if article_exists(zotero_id, articles_data, collection_name):
         return False, f"Article '{title}' already exists (ID: {zotero_id})"
     
     # Add article content
@@ -61,42 +74,46 @@ def add_article(
         "index": len(articles_data["articles"]) - 1
     }
     
-    save_articles(articles_data)
+    save_articles(articles_data, collection_name)
     return True, f"Article '{title}' added successfully"
 
 
-def get_all_articles() -> Tuple[List[str], List[str], List[Dict]]:
+def get_all_articles(collection_name: str = "default") -> Tuple[List[str], List[str], List[Dict]]:
     """
-    Get all stored articles
+    Get all stored articles for a collection
     
     Returns:
         Tuple of (documents, doc_ids, doc_metadata)
     """
-    articles_data = load_articles()
-    documents = articles_data["articles"]
+    articles_data = load_articles(collection_name)
+    documents = articles_data.get("articles", [])
     
-    # Reconstruct doc_ids and doc_metadata in correct order
+    # Reconstruct doc_ids and doc_metadata in index order if possible
+    # Build a list of (zid, meta) sorted by stored index to preserve ordering
+    metadata = articles_data.get("metadata", {})
+    sorted_items = sorted(metadata.items(), key=lambda kv: kv[1].get("index", 0))
+
     doc_ids = []
     doc_metadata = []
-    
-    for zotero_id, metadata in articles_data["metadata"].items():
-        index = metadata.get("index")
+
+    for zotero_id, meta in sorted_items:
+        index = meta.get("index")
         if index is not None and index < len(documents):
             doc_ids.append(zotero_id)
             doc_metadata.append({
-                "title": metadata.get("title", "Untitled"),
-                "itemType": metadata.get("itemType", "Unknown"),
-                "abstract": metadata.get("abstract", "")
+                "title": meta.get("title", "Untitled"),
+                "itemType": meta.get("itemType", "Unknown"),
+                "abstract": meta.get("abstract", "")
             })
-    
+
     return documents, doc_ids, doc_metadata
 
 
-def remove_article(zotero_id: str) -> Tuple[bool, str]:
+def remove_article(zotero_id: str, collection_name: str = "default") -> Tuple[bool, str]:
     """Remove an article from storage"""
-    articles_data = load_articles()
+    articles_data = load_articles(collection_name)
     
-    if not article_exists(zotero_id, articles_data):
+    if not article_exists(zotero_id, articles_data, collection_name):
         return False, "Article not found"
     
     metadata = articles_data["metadata"][zotero_id]
@@ -114,30 +131,30 @@ def remove_article(zotero_id: str) -> Tuple[bool, str]:
     # Remove metadata
     del articles_data["metadata"][zotero_id]
     
-    save_articles(articles_data)
+    save_articles(articles_data, collection_name)
     title = metadata.get("title", "Untitled")
     return True, f"Article '{title}' removed"
 
 
-def rename_article(zotero_id: str, new_title: str) -> Tuple[bool, str]:
+def rename_article(zotero_id: str, new_title: str, collection_name: str = "default") -> Tuple[bool, str]:
     """Rename an article's title in storage"""
-    articles_data = load_articles()
+    articles_data = load_articles(collection_name)
     
-    if not article_exists(zotero_id, articles_data):
+    if not article_exists(zotero_id, articles_data, collection_name):
         return False, "Article not found"
     
     articles_data["metadata"][zotero_id]["title"] = new_title
-    save_articles(articles_data)
+    save_articles(articles_data, collection_name)
     return True, f"Article '{zotero_id}' renamed to '{new_title}'"
 
 
-def clear_all_articles() -> str:
-    """Clear all stored articles"""
-    save_articles({"articles": [], "metadata": {}})
+def clear_all_articles(collection_name: str = "default") -> str:
+    """Clear all stored articles for a collection"""
+    save_articles({"articles": [], "metadata": {}}, collection_name)
     return "All articles cleared"
 
 
-def get_article_count() -> int:
-    """Get count of stored articles"""
-    articles_data = load_articles()
+def get_article_count(collection_name: str = "default") -> int:
+    """Get count of stored articles for a collection"""
+    articles_data = load_articles(collection_name)
     return len(articles_data["articles"])
