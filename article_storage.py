@@ -11,17 +11,29 @@ from typing import List, Dict, Tuple
 def _get_articles_file(collection_name: str = "default") -> str:
     """Get the file path for a specific collection.
 
-    Files are stored in a workspace-level `zotero_data/` directory so they
-    persist across Streamlit restarts. The path is determined by:
+    Files are stored in a persistent `zotero_data/` directory. The path is
+    determined by checking several fallback locations:
     1. WORKSPACE_DIR environment variable (if set)
-    2. Otherwise, the directory containing this module (the repo root)
+    2. The directory containing this module (repo root), if /mount is NOT in path
+       (since /mount/src is ephemeral in Streamlit Cloud)
+    3. User's home directory (fallback for ephemeral mounts)
     """
+    import pathlib
+    
     # Try environment variable first
     workspace = os.environ.get("WORKSPACE_DIR")
     
-    # If not set, use the directory of this module (repo root)
     if not workspace:
-        workspace = os.path.dirname(os.path.abspath(__file__))
+        module_path = os.path.dirname(os.path.abspath(__file__))
+        
+        # Check if we're in an ephemeral mount (e.g., /mount/src in Streamlit Cloud)
+        # These paths get refreshed on restart, so we need a fallback
+        if "/mount" in module_path:
+            # /mount/src is ephemeral; use home directory instead
+            workspace = os.path.expanduser("~")
+        else:
+            # Use the module's directory (repo root) if it's not ephemeral
+            workspace = module_path
     
     data_dir = os.path.join(workspace, "zotero_data")
     os.makedirs(data_dir, exist_ok=True)

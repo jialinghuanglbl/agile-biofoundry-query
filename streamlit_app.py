@@ -185,9 +185,15 @@ with st.sidebar:
     from article_storage import _get_articles_file
     debug_path = _get_articles_file("agile")
     debug_dir = os.path.dirname(debug_path)
+    
     with st.expander("Storage Info", expanded=False):
         st.caption(f"**Storage Location:**")
         st.code(debug_dir, language="text")
+        
+        # Show if using fallback
+        if "/mount" in debug_dir:
+            st.info("Using home directory fallback (ephemeral mount detected)")
+        
         st.caption(f"**Files:**")
         if os.path.exists(debug_dir):
             files = os.listdir(debug_dir)
@@ -198,6 +204,7 @@ with st.sidebar:
                 st.text("(none)")
         else:
             st.text("(directory not created yet)")
+    
     st.header("Collections & Documents")
     
     for col_info in COLLECTIONS:
