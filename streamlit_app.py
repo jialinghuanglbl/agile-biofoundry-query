@@ -383,7 +383,11 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                             total_processed = 0
 
                             for item_idx, item in enumerate(items):
-                                progress_bar.progress((item_idx + 1) / total_items)
+                                # Guard against division by zero
+                                if total_raw_items:
+                                    progress_bar.progress(min(1.0, (item_idx + 1) / total_raw_items))
+                                else:
+                                    progress_bar.progress(1.0)
                                 
                                 item_type = item['data']['itemType']
                                 title = item['data'].get('title', 'Untitled')
