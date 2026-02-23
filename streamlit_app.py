@@ -201,47 +201,6 @@ with st.sidebar:
     debug_path = _get_articles_file("agile")
     debug_dir = os.path.dirname(debug_path)
     
-    with st.expander("Storage Info", expanded=False):
-        st.caption(f"**Storage Location:**")
-        st.code(debug_dir, language="text")
-        
-        # Git status diagnostics
-        try:
-            from git_storage import _git_configured
-            git_ok = _git_configured()
-            if git_ok:
-                st.success("Git configured and ready for auto-commit")
-            else:
-                st.warning("Git not configured - articles stored locally only")
-        except ImportError:
-            st.info("Git persistence not available (local mode)")
-        
-        # Explain persistence mechanism
-        st.caption("**Persistence Method:**")
-        st.markdown("""
-**Streamlit Cloud:**
-- Articles stored in repo's `zotero_data/` directory
-- Auto-committed to GitHub after each change
-- Pulled on app startup to restore articles
-- Requires GITHUB_TOKEN in Streamlit secrets (if not auto-configured)
-
-**Local Development:**
-- Articles stored in `zotero_data/` directory on your machine
-- Persists across restarts naturally
-
-**Note:** Keep the `zotero_data/` directory committed to git for cloud persistence.
-        """)
-        
-        st.caption(f"**Files:**")
-        if os.path.exists(debug_dir):
-            files = os.listdir(debug_dir)
-            if files:
-                for f in files:
-                    st.text(f"✓ {f}")
-            else:
-                st.text("(none)")
-        else:
-            st.text("(directory not created yet)")
     
     st.header("Collections & Documents")
     
