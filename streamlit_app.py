@@ -441,7 +441,12 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                         continue
                                     
                                     # Track unsupported types
-                                    if item_type not in ['journalArticle', 'webpage', 'report', 'conferencePaper', 'book', 'bookSection', 'preprint', 'document', 'presentation']:
+                                    # Include video/audio recordings so transcripts in child notes are processed
+                                    if item_type not in [
+                                        'journalArticle', 'webpage', 'report', 'conferencePaper',
+                                        'book', 'bookSection', 'preprint', 'document', 'presentation',
+                                        'videoRecording', 'audioRecording'
+                                    ]:
                                         skipped_items['wrong_type'].append(f"{title} ({item_type})")
                                         continue
 
