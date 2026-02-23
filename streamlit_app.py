@@ -403,7 +403,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                     with st.spinner(f"Loading documents from {collection_name}..."):
                         try:
                             zot = zotero.Zotero(zotero_library_id, zotero_library_type, zotero_api_key)
-                            items = zot.collection_items(collection_zotero_key)
+                            # Ensure we fetch all items (pyzotero paginates by default)
+                            items = zot.everything(zot.collection_items(collection_zotero_key))
                             
                             documents = []
                             doc_ids = []
@@ -482,7 +483,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     abstract = item['data'].get('abstractNote', '')
                                     notes = []
 
-                                    children = zot.children(item['key'])
+                                    # Fetch all children (notes, attachments) for this item
+                                    children = zot.everything(zot.children(item['key']))
                                     for child in children:
                                         if child['data']['itemType'] == 'note':
                                             notes.append(child['data'].get('note', ''))

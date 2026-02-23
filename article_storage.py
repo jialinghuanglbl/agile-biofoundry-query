@@ -11,15 +11,15 @@ import json
 import os
 from typing import List, Dict, Tuple
 
-# Try to import git-based persistence (for Streamlit Cloud)
-try:
-    from git_storage import _get_data_dir, auto_commit_changes
-    GIT_ENABLED = True
-except ImportError:
-    GIT_ENABLED = False
-    def _get_data_dir():
-        """Fallback: store in repo root"""
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "zotero_data")
+# NOTE: git-based persistence is intentionally disabled for now.
+# The Streamlit app runs with a keep-alive workflow so local filesystem
+# storage is sufficient for your deployment. This avoids relying on
+# git subprocesses and tokens which were causing issues.
+GIT_ENABLED = False
+
+def _get_data_dir():
+    """Return the local data directory for storing articles."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "zotero_data")
 
 
 def _get_articles_file(collection_name: str = "default") -> str:
