@@ -57,6 +57,55 @@ def chunk_document(document: str, chunk_size: int = 800, overlap: int = 150) -> 
     return chunks
 
 
+def is_transcript_doc(document: str, metadata: Dict) -> bool:
+    """Heuristic to detect if a document is a transcript (e.g., YouTube).
+
+    Checks title/abstract for keywords, looks for timestamp patterns, and
+    inspects line lengths to decide.
+    """
+    title = metadata.get('title', '').lower() if metadata else ''
+    abstract = metadata.get('abstract', '').lower() if metadata else ''
+
+    if 'transcript' in title or 'transcript' in abstract:
+        return True
+    if 'youtube' in title or 'youtube' in abstract:
+        return True
+
+    # Timestamp patterns like 00:01 or 1:23:45
+    if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", document):
+        return True
+
+    # If the document has many short lines, it's likely a transcript
+    lines = [ln.strip() for ln in document.splitlines() if ln.strip()]
+    if len(lines) >= 10:
+        avg_len = sum(len(ln) for ln in lines) / len(lines)
+        if avg_len < 100:
+            return True
+
+    return False
+
+
+def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) -> List[Dict]:
+    """Chunk a transcript-like document by fixed character windows after cleanup."""
+    # Remove obvious timestamps
+    doc = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", document)
+    doc = re.sub(r"\s+", " ", doc).strip()
+
+    chunks = []
+    step = max(1, chunk_size - overlap)
+    for start in range(0, len(doc), step):
+        text = doc[start:start + chunk_size].strip()
+        if not text:
+            continue
+        chunks.append({
+            'text': text,
+            'start': start,
+            'end': start + len(text)
+        })
+
+    return chunks
+
+
 def summarize_chunk(text: str, max_sentences: int = 3) -> str:
     """
     Simple extractive summarization: pick the top scoring sentences by TF-IDF.
@@ -103,10 +152,19 @@ def create_chunked_documents(
     doc_id_mapping = []
 
     for doc_idx, (document, doc_id, metadata) in enumerate(zip(documents, doc_ids, doc_metadata)):
-        chunks = chunk_document(document, chunk_size=chunk_size, overlap=overlap)
+        # If this looks like a transcript (YouTube/video), use narrower, fixed-size chunking
+        if is_transcript_doc(document, metadata):
+            # narrower chunking and smaller summaries for transcripts
+            transcript_chunk_size = min(400, chunk_size)
+            transcript_overlap = min(80, overlap)
+            chunks = chunk_transcript(document, chunk_size=transcript_chunk_size, overlap=transcript_overlap)
+            use_summary_sentences = max(1, summary_sentences - 1)
+        else:
+            chunks = chunk_document(document, chunk_size=chunk_size, overlap=overlap)
+            use_summary_sentences = summary_sentences
 
         for chunk in chunks:
-            summary = summarize_chunk(chunk['text'], max_sentences=summary_sentences)
+            summary = summarize_chunk(chunk['text'], max_sentences=use_summary_sentences)
             chunk_data = {
                 'text': chunk['text'],
                 'summary': summary,
