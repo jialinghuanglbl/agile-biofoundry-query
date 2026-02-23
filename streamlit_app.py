@@ -379,7 +379,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                             }
 
                             progress_bar = st.progress(0)
-                            total_items = len(items)
+                            total_raw_items = len(items)
+                            total_processed = 0
 
                             for item_idx, item in enumerate(items):
                                 progress_bar.progress((item_idx + 1) / total_items)
@@ -387,9 +388,11 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                 item_type = item['data']['itemType']
                                 title = item['data'].get('title', 'Untitled')
                                 
-                                # Skip notes and annotations
+                                # Skip notes and annotations (don't count as processed)
                                 if item_type in ['note', 'annotation']:
                                     continue
+                                # Count items that we actually consider for import
+                                total_processed += 1
                                 
                                 # Check duplicates
                                 if article_exists(item['key'], None, collection_key):
@@ -493,7 +496,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                 'new_count': new_count,
                                 'duplicates': len(duplicates),
                                 'skipped_items': skipped_items,
-                                'total_processed': total_items
+                                'total_processed': total_processed,
+                                'total_raw_items': total_raw_items
                             }
 
                             if not documents and not duplicates:
@@ -546,7 +550,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
         if f"{prefix}_last_load_report" in st.session_state:
             report = st.session_state[f"{prefix}_last_load_report"]
             
-            st.success(f"Last load: {report['new_count']} new documents added from {report['total_processed']} total items")
+            st.success(f"Last load: {report['new_count']} new documents added from {report['total_processed']} processed items ({report.get('total_raw_items', report['total_processed'])} total in Zotero)")
             
             if report['duplicates'] > 0:
                 st.info(f"Skipped {report['duplicates']} duplicates (already in database)")
