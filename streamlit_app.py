@@ -60,8 +60,15 @@ def get_collection_zotero_key(collection_key: str) -> str:
     secret_key = f"zotero_collection_{collection_key}"
     return _safe_secret(secret_key)
 
+def init_session_state_for_collection(collection_key: str) -> None:
+    """Initialize session state keys for a collection"""
+    prefix = f"col_{collection_key}"
 
-def init_session_state_for_collection(collection_key: str) -> None:\n    \"\"\"Initialize session state keys for a collection\"\"\"\n    prefix = f\"col_{collection_key}\"\n    \n    if f\"{prefix}_documents\" not in st.session_state:\n        documents, doc_ids, doc_metadata = get_all_articles(collection_key)\n        st.session_state[f\"{prefix}_documents\"] = documents\n        st.session_state[f\"{prefix}_doc_ids\"] = doc_ids\n        st.session_state[f\"{prefix}_doc_metadata\"] = doc_metadata
+    if f"{prefix}_documents" not in st.session_state:
+        documents, doc_ids, doc_metadata = get_all_articles(collection_key)
+        st.session_state[f"{prefix}_documents"] = documents
+        st.session_state[f"{prefix}_doc_ids"] = doc_ids
+        st.session_state[f"{prefix}_doc_metadata"] = doc_metadata
         
         # Fit TF-IDF if documents exist
         if documents:
