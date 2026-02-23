@@ -61,15 +61,7 @@ def get_collection_zotero_key(collection_key: str) -> str:
     return _safe_secret(secret_key)
 
 
-def init_session_state_for_collection(collection_key: str) -> None:
-    """Initialize session state keys for a collection"""
-    prefix = f"col_{collection_key}"
-    
-    if f"{prefix}_documents" not in st.session_state:
-        documents, doc_ids, doc_metadata = get_all_articles(collection_key)
-        st.session_state[f"{prefix}_documents"] = documents
-        st.session_state[f"{prefix}_doc_ids"] = doc_ids
-        st.session_state[f"{prefix}_doc_metadata"] = doc_metadata
+def init_session_state_for_collection(collection_key: str) -> None:\n    \"\"\"Initialize session state keys for a collection\"\"\"\n    prefix = f\"col_{collection_key}\"\n    \n    if f\"{prefix}_documents\" not in st.session_state:\n        documents, doc_ids, doc_metadata = get_all_articles(collection_key)\n        st.session_state[f\"{prefix}_documents\"] = documents\n        st.session_state[f\"{prefix}_doc_ids\"] = doc_ids\n        st.session_state[f\"{prefix}_doc_metadata\"] = doc_metadata
         
         # Fit TF-IDF if documents exist
         if documents:
@@ -162,18 +154,18 @@ try:
 except Exception:
     pass
 
+# Load credentials from secrets
+zotero_library_id = _safe_secret("zotero_library_id")
+zotero_api_key = _safe_secret("zotero_api_key")
+zotero_library_type = _safe_secret("zotero_library_type", "user")
+openai_api_key = _safe_secret("openai_api_key")
+
 # On Streamlit Cloud: pull latest article data from git on startup
 try:
     from git_storage import pull_latest_articles
     pull_latest_articles()  # Silent operation; fails gracefully if git unavailable
 except ImportError:
     pass  # Git storage not available (local dev or offline)
-
-# Load credentials from secrets
-zotero_library_id = _safe_secret("zotero_library_id")
-zotero_api_key = _safe_secret("zotero_api_key")
-zotero_library_type = _safe_secret("zotero_library_type", "user")
-openai_api_key = _safe_secret("openai_api_key")
 
 # Initialize OpenAI client if key is present
 client = OpenAI(api_key=openai_api_key) if openai_api_key else None

@@ -215,6 +215,7 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
         # NOW: PUSH to GitHub immediately
         # This is critical for Streamlit Cloud persistence
         push_succeeded = False
+        push_error = ""
         
         for branch in ["main", "master"]:
             try:
@@ -231,9 +232,16 @@ def auto_commit_changes(collection_name: str, message: str) -> bool:
                     push_succeeded = True
                     break
                 else:
-                    # Push failed; check stderr for details
-                    error_msg = push_result.stderr
-                    if "Authentication failed" in error_msg or "401" in error_msg:
+                    # Push failed; log the error for debugging
+                    push_error = push_result.stderr or push_result.stdout
+                    # Log to help diagnose issues with GitHub authentication
+                    import sys
+                    try:
+                        print(f"[git_storage] Push to {branch} failed: {push_error[:200]}", file=sys.stderr)
+                    except Exception:
+                        pass
+                    
+                    if "Authentication failed" in push_error or "401" in push_error:
                         # Auth failed; token might be wrong/expired
                         continue
             except subprocess.TimeoutExpired:
@@ -304,7 +312,7 @@ def pull_latest_articles() -> bool:
         
         # Fetch to get latest from remote
         try:
-            subprocess.run(
+            fetch_result = subprocess.run(
                 ["git", "fetch", "origin"],
                 cwd=repo_root,
                 capture_output=True,
@@ -312,8 +320,18 @@ def pull_latest_articles() -> bool:
                 timeout=15,
                 env=env
             )
-        except Exception:
-            pass
+            if fetch_result.returncode != 0:
+                import sys
+                try:
+                    print(f"[git_storage] Fetch failed: {fetch_result.stderr[:200]}", file=sys.stderr)
+                except Exception:
+                    pass
+        except Exception as e:
+            import sys
+            try:
+                print(f"[git_storage] Fetch error: {str(e)[:200]}", file=sys.stderr)
+            except Exception:
+                pass
         
         # Try to pull the latest changes
         for branch in ["main", "master"]:
