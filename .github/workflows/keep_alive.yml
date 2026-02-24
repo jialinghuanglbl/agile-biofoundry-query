@@ -18,4 +18,7 @@ jobs:
             exit 0
           fi
           echo "Pinging $APP_URL"
-          curl -sS --max-time 10 -I "$APP_URL" || curl -sS --max-time 10 "$APP_URL" || true
+            # Attempt a HEAD and follow redirects, then log final HTTP status and effective URL
+            curl -sS --max-time 10 -I -L "$APP_URL" || true
+            res=$(curl -sS -o /dev/null -w "%{http_code} %{url_effective}" --max-time 10 -L "$APP_URL" || echo "000 $APP_URL")
+            echo "Final result: $res"
