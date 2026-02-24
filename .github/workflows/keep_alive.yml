@@ -18,7 +18,5 @@ jobs:
             exit 0
           fi
           echo "Pinging $APP_URL"
-            # Attempt a HEAD and follow redirects, then log final HTTP status and effective URL
-            curl -sS --max-time 10 -I -L "$APP_URL" || true
-            res=$(curl -sS -o /dev/null -w "%{http_code} %{url_effective}" --max-time 10 -L "$APP_URL" || echo "000 $APP_URL")
-            echo "Final result: $res"
+          # Follow redirects, use a browser-like User-Agent, and print final HTTP code + effective URL
+          curl -L -s -m 10 -o /dev/null -w "Final result: %{http_code} %{url_effective}\n" "$APP_URL" -A "Mozilla/5.0" --compressed || true
