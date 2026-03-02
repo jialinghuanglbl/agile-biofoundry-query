@@ -653,7 +653,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     if doc.get('timestamps'):
                                         extra.append("times " + ",".join(doc['timestamps']))
                                     extras = f" ({'; '.join(extra)})" if extra else ""
-                                    result += f"- {doc['title']}{extras} Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                                    result += f"- {doc['title']}{extras} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
             except Exception as e:
                 result = f"Error generating response: {str(e)}"
 
