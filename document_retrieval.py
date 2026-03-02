@@ -221,20 +221,32 @@ def retrieve_relevant_chunks(
             chunk = chunks_with_metadata[idx].copy()
             chunk['similarity'] = float(similarities[idx])
             chunk['original_doc_index'] = doc_id_mapping[idx]
-            
+
+            # try to extract a page number and a timestamp from the chunk text
+            page_match = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
+            ts_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
+            chunk['page'] = page_match.group(1) if page_match else None
+            chunk['timestamp'] = ts_match.group(0) if ts_match else None
+
             relevant_chunks.append(chunk)
-            
-            # Track which docs we're citing
+
+            # Track which docs we're citing, including page/time info
             doc_id = chunk['doc_id']
             if doc_id not in seen_docs:
                 seen_docs[doc_id] = {
                     'title': chunk['doc_title'],
                     'type': chunk['doc_type'],
                     'max_similarity': chunk['similarity'],
-                    'chunk_count': 0
+                    'chunk_count': 0,
+                    'pages': set(),
+                    'timestamps': set()
                 }
             seen_docs[doc_id]['chunk_count'] += 1
             seen_docs[doc_id]['max_similarity'] = max(seen_docs[doc_id]['max_similarity'], chunk['similarity'])
+            if chunk.get('page'):
+                seen_docs[doc_id]['pages'].add(chunk['page'])
+            if chunk.get('timestamp'):
+                seen_docs[doc_id]['timestamps'].add(chunk['timestamp'])
     
     return relevant_chunks, seen_docs
 
@@ -268,19 +280,32 @@ def format_context_from_chunks(
 
         for i, chunk in enumerate(chunks, 1):
             text_to_include = chunk.get('summary') if use_summaries and chunk.get('summary') else chunk['text']
-            context_parts.append(f"\n[Section {i}]\n{text_to_include}")
+            notes = []
+            if chunk.get('page'):
+                notes.append(f"page {chunk['page']}")
+            if chunk.get('timestamp'):
+                notes.append(f"~{chunk['timestamp']}")
+            section_label = f"[Section {i}"
+            if notes:
+                section_label += " (" + ", ".join(notes) + ")"
+            section_label += "]"
+            context_parts.append(f"\n{section_label}\n{text_to_include}")
 
     context = "\n".join(context_parts)
 
     # Create citations list
-    cited_docs = [
-        {
+    cited_docs = []
+    for doc_id, info in seen_docs.items():
+        entry = {
             'title': info['title'],
             'id': doc_id,
             'similarity': info['max_similarity'],
             'chunk_count': info['chunk_count']
         }
-        for doc_id, info in seen_docs.items()
-    ]
+        if info.get('pages'):
+            entry['pages'] = sorted(info['pages'], key=lambda x: int(x))
+        if info.get('timestamps'):
+            entry['timestamps'] = sorted(info['timestamps'])
+        cited_docs.append(entry)
 
     return context, cited_docs

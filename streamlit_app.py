@@ -642,7 +642,13 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                             if cited_docs:
                                 result += "\n\n---\n**Sources:**\n"
                                 for doc in cited_docs:
-                                    result += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                                    extra = []
+                                    if doc.get('pages'):
+                                        extra.append("pages " + ",".join(doc['pages']))
+                                    if doc.get('timestamps'):
+                                        extra.append("times " + ",".join(doc['timestamps']))
+                                    extras = f" ({'; '.join(extra)})" if extra else ""
+                                    result += f"- {doc['title']}{extras} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
             except Exception as e:
                 result = f"Error generating response: {str(e)}"
 
