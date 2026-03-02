@@ -222,11 +222,18 @@ def retrieve_relevant_chunks(
             chunk['similarity'] = float(similarities[idx])
             chunk['original_doc_index'] = doc_id_mapping[idx]
 
-            # try to extract a page number and a timestamp from the chunk text
-            page_match = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
-            ts_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
-            chunk['page'] = page_match.group(1) if page_match else None
-            chunk['timestamp'] = ts_match.group(0) if ts_match else None
+            doc_type = chunk.get('doc_type', '').lower()
+            # decide what to annotate: articles (pdf/text) get pages; videos/audio (transcripts) get timestamps
+            if doc_type in ['videorecording', 'audiorecording'] or 'transcript' in doc_type:
+                # timestamp detection only
+                ts_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
+                chunk['page'] = None
+                chunk['timestamp'] = ts_match.group(0) if ts_match else None
+            else:
+                # page-number detection only
+                page_match = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
+                chunk['page'] = page_match.group(1) if page_match else None
+                chunk['timestamp'] = None
 
             relevant_chunks.append(chunk)
 

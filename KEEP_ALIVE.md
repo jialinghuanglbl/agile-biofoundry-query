@@ -12,7 +12,4 @@ Setup steps
 
 Notes & alternatives
 - This keep-alive approach pings your app but is not a substitute for a paid "always-on" hosting plan.
-- The GitHub Actions workflow may not work reliably if Streamlit redirects unauthenticated requests to a login page. In that case or if you just prefer a simpler solution, you can use a free external uptime/monitoring service instead.
-  - **UptimeRobot** offers a free tier with 5-minute checks. Just create an account, add a "HTTP(s)" monitor pointing at your app URL, and it will periodically load the page like a browser.
-  - **Pingdom**, **Cron-job.org**, or similar services also work—any tool that performs a real browser or HTTP GET request will keep the app awake.
-- If you switch to an external service you can disable or remove the `.github/workflows/keep_alive.yml` workflow; it exists only as a convenience fallback.
+- If you prefer a hosted monitoring service, consider UptimeRobot or Pingdom which provide easy UI-based setups.

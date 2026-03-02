@@ -36,12 +36,17 @@ COLLECTIONS = [
 # ==================== HELPER FUNCTIONS ====================
 
 def extract_pdf_text(pdf_content):
-    """Extract text from PDF content"""
+    """Extract text from PDF content, inserting page number markers.
+
+    Each page is prefixed with "Page N" so that downstream chunking and
+    retrieval can identify the page where a snippet came from.
+    """
     try:
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_content))
         text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text() + "\n"
+        for i, page in enumerate(pdf_reader.pages, start=1):
+            page_text = page.extract_text() or ""
+            text += f"Page {i}\n" + page_text + "\n"
         return text
     except Exception as e:
         return f"Error extracting PDF text: {str(e)}"
@@ -648,7 +653,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     if doc.get('timestamps'):
                                         extra.append("times " + ",".join(doc['timestamps']))
                                     extras = f" ({'; '.join(extra)})" if extra else ""
-                                    result += f"- {doc['title']}{extras} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                                    result += f"- {doc['title']}{extras} Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
             except Exception as e:
                 result = f"Error generating response: {str(e)}"
 
