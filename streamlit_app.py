@@ -172,6 +172,18 @@ zotero_api_key = _safe_secret("zotero_api_key")
 zotero_library_type = _safe_secret("zotero_library_type", "user")
 openai_api_key = _safe_secret("openai_api_key")
 
+# Optionally enable git-backed persistence via a secret flag.
+# Set `enable_git_persistence: "true"` in Streamlit secrets or environment
+# to have article saves committed & pushed to GitHub automatically.
+enable_git = _safe_secret("enable_git_persistence", "").lower()
+if enable_git in ("1", "true", "yes"):
+    os.environ["ENABLE_GIT_PERSISTENCE"] = "true"
+    try:
+        import article_storage
+        article_storage.GIT_ENABLED = True
+    except Exception:
+        pass
+
 # On Streamlit Cloud: pull latest article data from git on startup
 try:
     from git_storage import pull_latest_articles
@@ -202,12 +214,23 @@ for col_info in COLLECTIONS:
 with st.sidebar:
     # Debug: Show storage path
     import os
-    from article_storage import _get_articles_file
+    from article_storage import _get_articles_file, GIT_ENABLED
     debug_path = _get_articles_file("agile")
     debug_dir = os.path.dirname(debug_path)
     
-    
     st.header("Collections & Documents")
+    if GIT_ENABLED:
+        st.success("Git persistence enabled – articles will be saved to GitHub")
+    else:
+        st.info("Git persistence is disabled; stored locally and may be lost on restart")
+    
+    # manual sync button
+    from git_storage import ensure_data_persisted
+    if st.button("Sync articles to GitHub", key="manual_sync"):
+        for col_info in COLLECTIONS:
+            status = ensure_data_persisted(col_info["collection_key"])
+            st.write(f"{col_info['name']}: {status}")
+    st.divider()
     
     for col_info in COLLECTIONS:
         collection_key = col_info["collection_key"]
