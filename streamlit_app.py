@@ -1,8 +1,6 @@
 import streamlit as st
 from pyzotero import zotero
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
 from openai import OpenAI
 import PyPDF2
 import requests
@@ -17,7 +15,6 @@ from article_storage import (
     get_all_articles,
     remove_article,
     clear_all_articles,
-    get_article_count,
     rename_article
 )
 from document_retrieval import (
@@ -82,26 +79,8 @@ def init_session_state_for_collection(collection_key: str) -> None:
             st.session_state[f"{prefix}_vectorizer"] = vectorizer
             st.session_state[f"{prefix}_tfidf_matrix"] = tfidf_matrix
             
-            # Build chunks
-            chunk_size = st.session_state.get('chunk_size', 800)
-            overlap = st.session_state.get('overlap', 150)
-            summary_sentences = st.session_state.get('summary_sentences', 3)
-            use_summaries = st.session_state.get('use_summaries', True)
-
-            chunks, doc_id_mapping = create_chunked_documents(
-                documents, doc_ids, doc_metadata,
-                chunk_size=chunk_size,
-                overlap=overlap,
-                summary_sentences=summary_sentences
-            )
-            st.session_state[f"{prefix}_chunks"] = chunks
-            st.session_state[f"{prefix}_doc_id_mapping"] = doc_id_mapping
-            
-            chunk_texts = [c['summary'] if use_summaries else c['text'] for c in chunks]
-            chunk_vectorizer = TfidfVectorizer(stop_words='english')
-            chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
-            st.session_state[f"{prefix}_chunk_vectorizer"] = chunk_vectorizer
-            st.session_state[f"{prefix}_chunk_tfidf_matrix"] = chunk_tfidf_matrix
+            # Build chunks using the standard function
+            ensure_chunk_index_for_collection(collection_key)
         else:
             st.session_state[f"{prefix}_doc_ids"] = []
             st.session_state[f"{prefix}_doc_metadata"] = []
@@ -168,15 +147,15 @@ client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 
 # Initialize global retrieval settings (same for all collections)
 if 'chunk_size' not in st.session_state:
-    st.session_state.chunk_size = 800
+    st.session_state.chunk_size = 600
 if 'overlap' not in st.session_state:
-    st.session_state.overlap = 150
+    st.session_state.overlap = 100
 if 'summary_sentences' not in st.session_state:
-    st.session_state.summary_sentences = 3
+    st.session_state.summary_sentences = 2
 if 'use_summaries' not in st.session_state:
     st.session_state.use_summaries = True
-if 'k_chunks' not in st.session_state:
-    st.session_state.k_chunks = 6
+if 'query_cache' not in st.session_state:
+    st.session_state.query_cache = {}
 
 # Initialize session state for each collection
 for col_info in COLLECTIONS:
@@ -184,11 +163,6 @@ for col_info in COLLECTIONS:
 
 # ==================== SIDEBAR: DOCUMENT MANAGEMENT ====================
 with st.sidebar:
-    # Debug: Show storage path
-    import os
-    from article_storage import _get_articles_file
-    debug_path = _get_articles_file("agile")
-    debug_dir = os.path.dirname(debug_path)
     
     
     st.header("Collections & Documents")
@@ -255,31 +229,13 @@ with st.sidebar:
                             del st.session_state[f"{prefix}_doc_ids"][idx]
                             del st.session_state[f"{prefix}_doc_metadata"][idx]
                             
-                            # Rebuild index
-                            if st.session_state[f"{prefix}_documents"]:
-                                vectorizer = TfidfVectorizer(stop_words='english')
-                                tfidf_matrix = vectorizer.fit_transform(st.session_state[f"{prefix}_documents"])
-                                st.session_state[f"{prefix}_vectorizer"] = vectorizer
-                                st.session_state[f"{prefix}_tfidf_matrix"] = tfidf_matrix
-                                
-                                chunks, doc_id_mapping = create_chunked_documents(
-                                    st.session_state[f"{prefix}_documents"],
-                                    st.session_state[f"{prefix}_doc_ids"],
-                                    st.session_state[f"{prefix}_doc_metadata"]
-                                )
-                                st.session_state[f"{prefix}_chunks"] = chunks
-                                st.session_state[f"{prefix}_doc_id_mapping"] = doc_id_mapping
-                                
-                                use_summaries = st.session_state.get('use_summaries', True)
-                                chunk_texts = [c['summary'] if use_summaries and c.get('summary') else c['text'] for c in chunks]
-                                chunk_vectorizer = TfidfVectorizer(stop_words='english')
-                                chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
-                                st.session_state[f"{prefix}_chunk_vectorizer"] = chunk_vectorizer
-                                st.session_state[f"{prefix}_chunk_tfidf_matrix"] = chunk_tfidf_matrix
-                            else:
-                                for key in [f'{prefix}_vectorizer', f'{prefix}_tfidf_matrix', f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
-                                    if key in st.session_state:
-                                        del st.session_state[key]
+                            # Clear existing index to force rebuild
+                            for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
+                                if key in st.session_state:
+                                    del st.session_state[key]
+                            
+                            # Rebuild index using the standard function
+                            ensure_chunk_index_for_collection(collection_key)
                             
                             st.success("Document deleted and index rebuilt")
                             st.rerun()
@@ -321,6 +277,21 @@ with st.sidebar:
                             key=f"sidebar_download_{collection_key}",
                             use_container_width=True
                         )
+                
+                # Cache management
+                st.divider()
+                cache_col1, cache_col2 = st.columns(2)
+                with cache_col1:
+                    cache_size = len([k for k in st.session_state.query_cache.keys() if k.startswith(f"{collection_key}:")])
+                    st.metric("Cached Queries", cache_size)
+                with cache_col2:
+                    if st.button("Clear Query Cache", key=f"clear_cache_{collection_key}", use_container_width=True):
+                        # Remove cache entries for this collection
+                        keys_to_remove = [k for k in st.session_state.query_cache.keys() if k.startswith(f"{collection_key}:")]
+                        for key in keys_to_remove:
+                            del st.session_state.query_cache[key]
+                        st.success(f"Cleared {len(keys_to_remove)} cached queries")
+                        st.rerun()
             else:
                 st.caption("No documents yet. Load from Zotero tab.")
 # ==================== MAIN CONTENT WITH TABS ====================
@@ -515,26 +486,16 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     st.session_state[f"{prefix}_vectorizer"] = vectorizer
                                     st.session_state[f"{prefix}_tfidf_matrix"] = tfidf_matrix
                                     
-                                    chunk_size = st.session_state.get('chunk_size', 800)
-                                    overlap = st.session_state.get('overlap', 150)
-                                    summary_sentences = st.session_state.get('summary_sentences', 3)
-                                    use_summaries = st.session_state.get('use_summaries', True)
-
-                                    chunks, doc_id_mapping = create_chunked_documents(
-                                        all_documents, all_doc_ids, all_doc_metadata,
-                                        chunk_size=chunk_size,
-                                        overlap=overlap,
-                                        summary_sentences=summary_sentences
-                                    )
-                                    st.session_state[f"{prefix}_chunks"] = chunks
-                                    st.session_state[f"{prefix}_doc_id_mapping"] = doc_id_mapping
+                                    # Clear existing chunk index and rebuild
+                                    for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
+                                        if key in st.session_state:
+                                            del st.session_state[key]
                                     
-                                    chunk_texts = [c['summary'] if use_summaries else c['text'] for c in chunks]
-                                    chunk_vectorizer = TfidfVectorizer(stop_words='english')
-                                    chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
-                                    st.session_state[f"{prefix}_chunk_vectorizer"] = chunk_vectorizer
-                                    st.session_state[f"{prefix}_chunk_tfidf_matrix"] = chunk_tfidf_matrix
-                                    st.success(f"Auto-rebuilt index with {len(chunks)} chunks")
+                                    ensure_chunk_index_for_collection(collection_key)
+                                    
+                                    # Get chunk count for success message
+                                    chunk_count = len(st.session_state.get(f"{prefix}_chunks", []))
+                                    st.success(f"Auto-rebuilt index with {chunk_count} chunks")
 
                                 message = f"Loaded {new_count} new documents from {collection_name} (Total: {len(all_documents)} documents)"
                                 if duplicates:
@@ -595,49 +556,57 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             pending = st.session_state[f'{prefix}_pending_prompt']
             try:
                 with st.spinner("Typing..."):
-                    if not ensure_chunk_index_for_collection(collection_key):
-                        result = "No indexed documents available to answer the query. Please load the Zotero library."
+                    # Check cache first
+                    cache_key = f"{collection_key}:{pending.lower().strip()}"
+                    if cache_key in st.session_state.query_cache:
+                        result = st.session_state.query_cache[cache_key]
                     else:
-                        k_chunks = st.session_state.get('k_chunks', 6)
-                        similarity_threshold = 0.05
-
-                        relevant_chunks, seen_docs = retrieve_relevant_chunks(
-                            pending,
-                            st.session_state[f"{prefix}_chunk_vectorizer"],
-                            st.session_state[f"{prefix}_chunk_tfidf_matrix"],
-                            st.session_state[f"{prefix}_chunks"],
-                            st.session_state[f"{prefix}_doc_id_mapping"],
-                            k=k_chunks,
-                            similarity_threshold=similarity_threshold
-                        )
-
-                        use_summaries = st.session_state.get('use_summaries', True)
-                        context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
-
-                        if not context or context == "":
-                            context = "No relevant documents found."
-
-                        if client is None:
-                            result = "OpenAI API key is not set. Please add it to Streamlit secrets to enable the assistant."
+                        if not ensure_chunk_index_for_collection(collection_key):
+                            result = "No indexed documents available to answer the query. Please load the Zotero library."
                         else:
-                            result = client.chat.completions.create(
-                                model="gpt-4o-mini",
-                                messages=[
-                                    {"role": "system", "content": f"You are a helpful assistant knowledgeable about {collection_name}. Use the provided context to answer the query comprehensively."},
-                                    {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {pending}"}
-                                ]
-                            ).choices[0].message.content
+                            k_chunks = st.session_state.get('k_chunks', 4)
+                            similarity_threshold = 0.1
 
-                            if cited_docs:
-                                result += "\n\n---\n**Sources:**\n"
-                                for doc in cited_docs:
-                                    extra = []
-                                    if doc.get('pages'):
-                                        extra.append("pages " + ",".join(doc['pages']))
-                                    if doc.get('timestamps'):
-                                        extra.append("times " + ",".join(doc['timestamps']))
-                                    extras = f" ({'; '.join(extra)})" if extra else ""
-                                    result += f"- {doc['title']}{extras} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                            relevant_chunks, seen_docs = retrieve_relevant_chunks(
+                                pending,
+                                st.session_state[f"{prefix}_chunk_vectorizer"],
+                                st.session_state[f"{prefix}_chunk_tfidf_matrix"],
+                                st.session_state[f"{prefix}_chunks"],
+                                st.session_state[f"{prefix}_doc_id_mapping"],
+                                k=k_chunks,
+                                similarity_threshold=similarity_threshold
+                            )
+
+                            use_summaries = st.session_state.get('use_summaries', True)
+                            context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
+
+                            if not context or context == "":
+                                context = "No relevant documents found."
+
+                            if client is None:
+                                result = "OpenAI API key is not set. Please add it to Streamlit secrets to enable the assistant."
+                            else:
+                                result = client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[
+                                        {"role": "system", "content": f"You are a helpful assistant knowledgeable about {collection_name}. Use the provided context to answer the query comprehensively."},
+                                        {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {pending}"}
+                                    ]
+                                ).choices[0].message.content
+
+                                if cited_docs:
+                                    result += "\n\n---\n**Sources:**\n"
+                                    for doc in cited_docs:
+                                        extra = []
+                                        if doc.get('pages'):
+                                            extra.append("pages " + ",".join(doc['pages']))
+                                        if doc.get('timestamps'):
+                                            extra.append("times " + ",".join(doc['timestamps']))
+                                        extras = f" ({'; '.join(extra)})" if extra else ""
+                                        result += f"- {doc['title']}{extras} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                        
+                        # Cache the result
+                        st.session_state.query_cache[cache_key] = result
             except Exception as e:
                 result = f"Error generating response: {str(e)}"
 

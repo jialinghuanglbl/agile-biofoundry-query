@@ -106,7 +106,7 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
     return chunks
 
 
-def summarize_chunk(text: str, max_sentences: int = 3) -> str:
+def summarize_chunk(text: str, max_sentences: int = 2) -> str:
     """
     Simple extractive summarization: pick the top scoring sentences by TF-IDF.
     This is fast and keeps important sentences while reducing token usage.
@@ -119,7 +119,7 @@ def summarize_chunk(text: str, max_sentences: int = 3) -> str:
         return text.strip()
 
     try:
-        vec = TfidfVectorizer(stop_words='english')
+        vec = TfidfVectorizer(stop_words='english', max_features=1000)
         X = vec.fit_transform(sentences)
         scores = X.sum(axis=1).A1
         top_idx = np.argsort(scores)[-max_sentences:]
