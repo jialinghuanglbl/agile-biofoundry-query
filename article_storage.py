@@ -3,19 +3,12 @@ Article Storage Module
 Handles persistent storage of Zotero articles and prevents duplicates
 Supports multiple collections with separate storage files
 
-For Streamlit Cloud: Articles are stored in the repo and auto-committed to git.
-For local dev: Articles stored in ./zotero_data/
+Articles are stored locally in ./zotero_data/
 """
 
 import json
 import os
 from typing import List, Dict, Tuple
-
-# NOTE: git-based persistence is intentionally disabled for now.
-# The Streamlit app runs with a keep-alive workflow so local filesystem
-# storage is sufficient for your deployment. This avoids relying on
-# git subprocesses and tokens which were causing issues.
-GIT_ENABLED = False
 
 def _get_data_dir():
     """Return the local data directory for storing articles."""
@@ -25,11 +18,7 @@ def _get_data_dir():
 def _get_articles_file(collection_name: str = "default") -> str:
     """Get the file path for a specific collection.
 
-    Files are stored in the repo's `zotero_data/` directory and auto-committed
-    to git when changes occur (for Streamlit Cloud persistence).
-    
-    On local development, files are simply stored on disk.
-    On Streamlit Cloud, files are committed to git for persistence across restarts.
+    Files are stored in the `zotero_data/` directory.
     """
     data_dir = _get_data_dir()
     return os.path.join(data_dir, f"zotero_articles_{collection_name}.json")
@@ -49,7 +38,7 @@ def load_articles(collection_name: str = "default") -> Dict:
 
 def save_articles(data: Dict, collection_name: str = "default") -> None:
     """Save articles to persistent storage using an atomic write for a
-    specific collection. Also commits to git if enabled.
+    specific collection.
     """
     articles_file = _get_articles_file(collection_name)
     # Ensure parent dir exists (should already) and write atomically
@@ -61,12 +50,6 @@ def save_articles(data: Dict, collection_name: str = "default") -> None:
         os.fsync(f.fileno())
     # Atomically replace
     os.replace(tmp_path, articles_file)
-    
-    # Try to commit to git for Streamlit Cloud persistence
-    if GIT_ENABLED:
-        success = auto_commit_changes(collection_name, f"Update {collection_name} articles")
-        # Note: auto_commit_changes now requires BOTH commit AND push to succeed
-        # If it returns False, files are still saved locally but not synced to GitHub
 
 
 def article_exists(zotero_id: str, articles_data: Dict = None, collection_name: str = "default") -> bool:
