@@ -335,7 +335,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                 'wrong_type': [],
                                 'duplicate': [],
                                 'no_content': [],
-                                'errors': []
+                                'errors': [],
+                                'temp_errors': []  # For temporary issues like 502
                             }
 
                             progress_bar = st.progress(0)
@@ -415,7 +416,26 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     notes = []
 
                                     # Fetch all children (notes, attachments) for this item
-                                    children = zot.everything(zot.children(item['key']))
+                                    children = []
+                                    max_retries = 3
+                                    for attempt in range(max_retries):
+                                        try:
+                                            children = zot.everything(zot.children(item['key']))
+                                            break  # Success, exit retry loop
+                                        except Exception as child_err:
+                                            if attempt < max_retries - 1:  # Not the last attempt
+                                                import time
+                                                time.sleep(1 * (attempt + 1))  # Exponential backoff: 1s, 2s, 3s
+                                            else:
+                                                # All retries failed, continue without children
+                                                children = []
+                                                if "502" in str(child_err) or "Bad Gateway" in str(child_err):
+                                                    # Temporary server error, log separately
+                                                    skipped_items['temp_errors'].append(f"{title}: Could not fetch notes/attachments (temporary server error)")
+                                                else:
+                                                    # Other persistent errors
+                                                    skipped_items['temp_errors'].append(f"{title}: Could not fetch notes/attachments ({str(child_err)})")
+                                    
                                     for child in children:
                                         if child['data']['itemType'] == 'note':
                                             notes.append(child['data'].get('note', ''))
@@ -428,17 +448,29 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                             link_mode = child['data'].get('linkMode', '')
                                             if link_mode in ['linked_file', 'imported_file', 'imported_url']:
                                                 file_url = f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
-                                                try:
-                                                    response = requests.get(file_url, timeout=10)
-                                                    if response.status_code == 200:
-                                                        content_type = response.headers.get('Content-Type', '')
-                                                        if 'application/pdf' in content_type:
-                                                            pdf_text = extract_pdf_text(response.content)
-                                                            if not pdf_text.startswith("Error"):
-                                                                text += f"\n{pdf_text}"
-                                                        elif 'text/html' in content_type:
-                                                            text += f"\n{response.text}"
-                                                except Exception as attach_err:
+                                                attachment_success = False
+                                                for attempt in range(3):  # Retry attachment downloads
+                                                    try:
+                                                        response = requests.get(file_url, timeout=10)
+                                                        if response.status_code == 200:
+                                                            content_type = response.headers.get('Content-Type', '')
+                                                            if 'application/pdf' in content_type:
+                                                                pdf_text = extract_pdf_text(response.content)
+                                                                if not pdf_text.startswith("Error"):
+                                                                    text += f"\n{pdf_text}"
+                                                                    attachment_success = True
+                                                            elif 'text/html' in content_type:
+                                                                text += f"\n{response.text}"
+                                                                attachment_success = True
+                                                        break  # Success or final attempt
+                                                    except Exception as attach_err:
+                                                        if attempt < 2:  # Not the last attempt
+                                                            import time
+                                                            time.sleep(1 * (attempt + 1))
+                                                        # Continue to next attempt or give up
+                                                
+                                                if not attachment_success and response.status_code != 200:
+                                                    # Log attachment fetch failure but don't fail the whole item
                                                     pass
 
                                     if text.strip():
@@ -528,9 +560,31 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                     for item in skipped['no_content']:
                         st.write(f"- {item}")
 
+            if skipped['temp_errors']:
+                st.warning(f"Encountered {len(skipped['temp_errors'])} temporary issues (items loaded without notes/attachments):")
+                with st.expander("View temporary issues"):
+                    for item in skipped['temp_errors']:
+                        st.write(f"- {item}")
+            
             if skipped['errors']:
-                st.error(f"Encountered {len(skipped['errors'])} errors:")
-                with st.expander("View errors"):
+                # Check if there are 502 errors
+                has_502_errors = any("502" in error or "Bad Gateway" in error for error in skipped['errors'])
+                
+                if has_502_errors:
+                    st.error(f"Encountered {len(skipped['errors'])} permanent errors (including server issues):")
+                    st.info("💡 **Tip:** Some errors may be temporary. Try loading again in a few minutes.")
+                    col_retry, col_clear = st.columns([1, 1])
+                    with col_retry:
+                        if st.button("Retry Load", key=f"retry_load_{collection_key}", type="primary"):
+                            # Clear the report and trigger a reload
+                            del st.session_state[f"{prefix}_last_load_report"]
+                            st.rerun()
+                    with col_clear:
+                        pass  # Space for future buttons
+                else:
+                    st.error(f"Encountered {len(skipped['errors'])} permanent errors:")
+                
+                with st.expander("View permanent errors"):
                     for item in skipped['errors']:
                         st.write(f"- {item}")
             
