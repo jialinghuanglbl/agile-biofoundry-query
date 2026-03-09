@@ -218,6 +218,7 @@ with st.sidebar:
     debug_path = _get_articles_file("agile")
     debug_dir = os.path.dirname(debug_path)
     
+    
     st.header("Collections & Documents")
     if GIT_ENABLED:
         st.success("Git persistence enabled – articles will be saved to GitHub")
