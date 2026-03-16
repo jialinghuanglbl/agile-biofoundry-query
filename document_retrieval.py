@@ -212,7 +212,7 @@ def retrieve_relevant_chunks(
     raw_similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
 
     # Apply low-relevance reduction before selecting top k
-    low_relevance_weight = 0.35
+    low_relevance_weight = 0.425
     adjusted_similarities = np.array([
         raw_similarities[i] * low_relevance_weight if chunks_with_metadata[i].get('low_relevance') else raw_similarities[i]
         for i in range(len(raw_similarities))
