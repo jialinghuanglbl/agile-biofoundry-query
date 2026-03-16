@@ -62,6 +62,18 @@ def get_collection_zotero_key(collection_key: str) -> str:
     secret_key = f"zotero_collection_{collection_key}"
     return _safe_secret(secret_key)
 
+
+def is_item_low_relevance(item: dict) -> bool:
+    """Check if Zotero item has low-relevance tag."""
+    tags = item.get('data', {}).get('tags', []) or []
+    for tag in tags:
+        tag_value = tag.get('tag') if isinstance(tag, dict) else str(tag)
+        normalized = tag_value.strip().lower().replace(' ', '-')
+        if normalized in ['low-relevance', 'lowrelevance', 'low-relevance']:
+            return True
+    return False
+
+
 def init_session_state_for_collection(collection_key: str) -> None:
     """Initialize session state keys for a collection"""
     prefix = f"col_{collection_key}"
@@ -352,6 +364,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                 
                                 item_type = item['data']['itemType']
                                 title = item['data'].get('title', 'Untitled')
+                                low_relevance = is_item_low_relevance(item)
                                 
                                 # Skip notes and annotations (don't count as processed)
                                 if item_type in ['note', 'annotation']:
@@ -381,14 +394,15 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                                         pdf_text = extract_pdf_text(response.content)
                                                         if not pdf_text.startswith("Error") and pdf_text.strip():
                                                             text = f"{title}\n{pdf_text}"
-                                                            success, msg = add_article(item['key'], text, title, 'attachment', '', collection_key)
+                                                            success, msg = add_article(item['key'], text, title, 'attachment', '', collection_key, low_relevance=low_relevance)
                                                             if success:
                                                                 documents.append(text)
                                                                 doc_ids.append(item['key'])
                                                                 doc_metadata.append({
                                                                     'title': title,
                                                                     'itemType': 'attachment (PDF)',
-                                                                    'abstract': ''
+                                                                    'abstract': '',
+                                                                    'low_relevance': low_relevance
                                                                 })
                                                                 new_count += 1
                                                         else:
@@ -474,14 +488,15 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                                     pass
 
                                     if text.strip():
-                                        success, msg = add_article(item['key'], text, title, item_type, abstract, collection_key)
+                                        success, msg = add_article(item['key'], text, title, item_type, abstract, collection_key, low_relevance=low_relevance)
                                         if success:
                                             documents.append(text)
                                             doc_ids.append(item['key'])
                                             doc_metadata.append({
                                                 'title': title,
                                                 'itemType': item_type,
-                                                'abstract': abstract[:200] if abstract else ''
+                                                'abstract': abstract[:200] if abstract else '',
+                                                'low_relevance': low_relevance
                                             })
                                             new_count += 1
                                     else:

@@ -172,6 +172,7 @@ def create_chunked_documents(
                 'doc_title': metadata.get('title', 'Untitled'),
                 'doc_type': metadata.get('itemType', 'Unknown'),
                 'doc_abstract': metadata.get('abstract', ''),
+                'low_relevance': metadata.get('low_relevance', False),
                 'chunk_position': len([c for c in chunks_with_metadata if c['doc_id'] == doc_id])
             }
             chunks_with_metadata.append(chunk_data)
@@ -216,10 +217,18 @@ def retrieve_relevant_chunks(
     relevant_chunks = []
     seen_docs = {}  # Track docs we've already cited
     
+    low_relevance_weight = 0.55
+
     for idx in top_indices:
-        if similarities[idx] > similarity_threshold:
-            chunk = chunks_with_metadata[idx].copy()
-            chunk['similarity'] = float(similarities[idx])
+        raw_similarity = similarities[idx]
+        chunk = chunks_with_metadata[idx].copy()
+        if chunk.get('low_relevance'):
+            adjusted_similarity = raw_similarity * low_relevance_weight
+        else:
+            adjusted_similarity = raw_similarity
+
+        if adjusted_similarity > similarity_threshold:
+            chunk['similarity'] = float(adjusted_similarity)
             chunk['original_doc_index'] = doc_id_mapping[idx]
 
             doc_type = chunk.get('doc_type', '').lower()
