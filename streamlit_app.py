@@ -10,205 +10,117 @@ import io
 import os
 import json
 
-# Function to extract text from PDF content
+# ==================== CONFIG ====================
+COLLECTIONS = [
+    {"name": "Agile BioFoundry", "key": "agile", "secret": "zotero_collection_agile"},
+    {"name": "ABPDU", "key": "abpdu", "secret": "zotero_collection_abpdu"}
+]
+
+# ==================== HELPERS ====================
+
 def extract_pdf_text(pdf_content):
     try:
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_content))
         text = ""
         for page in pdf_reader.pages:
-            text += page.extract_text() + "\n"
+            page_text = page.extract_text() or ""
+            text += page_text + "\n"
         return text
     except Exception as e:
         return f"Error extracting PDF text: {str(e)}"
 
 
 def is_item_low_relevance(item):
-    """Detect low-relevance tags on Zotero items."""
     tags = item.get('data', {}).get('tags', []) or []
     for tag in tags:
-        if isinstance(tag, dict):
-            tag_value = tag.get('tag', '')
-        else:
-            tag_value = str(tag)
+        tag_value = tag.get('tag', '') if isinstance(tag, dict) else str(tag)
         normalized = tag_value.strip().lower().replace(' ', '-')
-        if normalized in ['low-relevance', 'lowrelevance', 'low-relevance']:
+        if normalized in ['low-relevance', 'lowrelevance', 'low relevance']:
             return True
     return False
 
-# Streamlit app
-st.title("Agile Biofoundry Zotero Query App")
 
-# Load credentials from secrets
-zotero_library_id = st.secrets["zotero_library_id"]
-zotero_api_key = st.secrets["zotero_api_key"]
-zotero_library_type = st.secrets["zotero_library_type"]
-openai_api_key = st.secrets["openai_api_key"]
-zotero_collection_key = st.secrets.get("zotero_collection_key", "")  # Optional
+def init_collection_state(collection_key):
+    keys = [
+        f"documents_{collection_key}",
+        f"doc_ids_{collection_key}",
+        f"doc_metadata_{collection_key}",
+        f"vectorizer_{collection_key}",
+        f"tfidf_matrix_{collection_key}",
+        f"messages_{collection_key}"
+    ]
+    defaults = [[], [], [], None, None, []]
+    for key, default in zip(keys, defaults):
+        if key not in st.session_state:
+            st.session_state[key] = default
 
-# Initialize OpenAI client AFTER loading the API key
-client = OpenAI(api_key=openai_api_key)
 
-# Initialize session state for documents
-if "documents" not in st.session_state:
-    st.session_state.documents = []
-if "doc_ids" not in st.session_state:
-    st.session_state.doc_ids = []
-if "doc_metadata" not in st.session_state:
-    st.session_state.doc_metadata = []  # Store titles and other metadata
+def set_collection_state(collection_key, documents=None, doc_ids=None, doc_metadata=None, vectorizer=None, tfidf_matrix=None, messages=None):
+    if documents is not None:
+        st.session_state[f"documents_{collection_key}"] = documents
+    if doc_ids is not None:
+        st.session_state[f"doc_ids_{collection_key}"] = doc_ids
+    if doc_metadata is not None:
+        st.session_state[f"doc_metadata_{collection_key}"] = doc_metadata
+    if vectorizer is not None:
+        st.session_state[f"vectorizer_{collection_key}"] = vectorizer
+    if tfidf_matrix is not None:
+        st.session_state[f"tfidf_matrix_{collection_key}"] = tfidf_matrix
+    if messages is not None:
+        st.session_state[f"messages_{collection_key}"] = messages
 
-# Sidebar for document management
-with st.sidebar:
-    st.header("Document Management")
-    
-    # Display document count
-    if st.session_state.documents:
-        st.metric("Total Documents", len(st.session_state.documents))
-        
-        # View documents section
-        st.subheader("View Documents")
-        
-        # Search/filter documents
-        search_term = st.text_input("Search documents", "")
-        
-        # Filter documents based on search
-        filtered_indices = []
-        for idx, metadata in enumerate(st.session_state.doc_metadata):
-            title = metadata.get('title', 'Untitled')
-            if search_term.lower() in title.lower():
-                filtered_indices.append(idx)
-        
-        if not search_term:
-            filtered_indices = list(range(len(st.session_state.doc_metadata)))
-        
-        st.write(f"Showing {len(filtered_indices)} of {len(st.session_state.documents)} documents")
-        
-        # Display each document with options
-        for idx in filtered_indices:
-            metadata = st.session_state.doc_metadata[idx]
-            title = metadata.get('title', 'Untitled')
-            item_type = metadata.get('itemType', 'Unknown')
-            
-            with st.expander(f"{title[:50]}{'...' if len(title) > 50 else ''}"):
-                st.write(f"**Type:** {item_type}")
-                st.write(f"**Zotero ID:** {st.session_state.doc_ids[idx]}")
-                
-                # Show preview of content
-                preview = st.session_state.documents[idx][:300]
-                st.text_area("Preview", preview, height=100, disabled=True, key=f"preview_{idx}")
-                
-                # Delete button
-                if st.button(f"Delete", key=f"delete_{idx}"):
-                    # Remove from all lists
-                    del st.session_state.documents[idx]
-                    del st.session_state.doc_ids[idx]
-                    del st.session_state.doc_metadata[idx]
-                    
-                    # Refit TF-IDF if documents remain
-                    if st.session_state.documents:
-                        vectorizer = TfidfVectorizer(stop_words='english')
-                        tfidf_matrix = vectorizer.fit_transform(st.session_state.documents)
-                        st.session_state.vectorizer = vectorizer
-                        st.session_state.tfidf_matrix = tfidf_matrix
-                    else:
-                        # Clear vectorizer if no documents
-                        if 'vectorizer' in st.session_state:
-                            del st.session_state.vectorizer
-                        if 'tfidf_matrix' in st.session_state:
-                            del st.session_state.tfidf_matrix
-                    
-                    st.rerun()
-        
-        # Bulk actions
-        st.subheader("Bulk Actions")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("Clear All", type="secondary"):
-                st.session_state.documents = []
-                st.session_state.doc_ids = []
-                st.session_state.doc_metadata = []
-                if 'vectorizer' in st.session_state:
-                    del st.session_state.vectorizer
-                if 'tfidf_matrix' in st.session_state:
-                    del st.session_state.tfidf_matrix
-                st.rerun()
-        
-        with col2:
-            # Export metadata as JSON
-            if st.button("Export List"):
-                export_data = {
-                    "count": len(st.session_state.documents),
-                    "documents": [
-                        {
-                            "zotero_id": st.session_state.doc_ids[i],
-                            "title": st.session_state.doc_metadata[i].get('title', 'Untitled'),
-                            "type": st.session_state.doc_metadata[i].get('itemType', 'Unknown')
-                        }
-                        for i in range(len(st.session_state.documents))
-                    ]
-                }
-                st.download_button(
-                    label="Download JSON",
-                    data=json.dumps(export_data, indent=2),
-                    file_name="zotero_documents.json",
-                    mime="application/json"
-                )
-    else:
-        st.info("No documents loaded yet. Click 'Load Zotero Library' to get started.")
 
-# Main content area
-# Button to load library
-if st.button("Load Zotero Library", type="primary"):
+def load_zotero_collection(collection_key, collection_secret_key):
     if not zotero_library_id or not zotero_api_key:
         st.error("Zotero Library ID and API Key must be set in Streamlit secrets.")
-    else:
-        with st.spinner("Loading documents from Zotero..."):
-            try:
-                zot = zotero.Zotero(zotero_library_id, zotero_library_type, zotero_api_key)
+        return
 
-                # Fetch items from collection if key provided, else all items
-                if zotero_collection_key:
-                    items = zot.collection_items(zotero_collection_key)
-                else:
-                    items = zot.items()
+    with st.spinner(f"Loading {collection_key} documents from Zotero..."):
+        try:
+            zot = zotero.Zotero(zotero_library_id, zotero_library_type, zotero_api_key)
+            collection_key_value = st.secrets.get(collection_secret_key, "")
 
-                documents = []
-                doc_ids = []
-                doc_metadata = []
+            if collection_key_value:
+                items = zot.everything(zot.collection_items(collection_key_value))
+            else:
+                items = zot.everything(zot.items())
 
-                progress_bar = st.progress(0)
-                total_items = len(items)
+            documents = []
+            doc_ids = []
+            doc_metadata = []
 
-                for item_idx, item in enumerate(items):
-                    # Update progress
-                    progress_bar.progress((item_idx + 1) / total_items)
-                    
-                    # Skip if not a relevant item type
-                    if item['data']['itemType'] not in ['journalArticle', 'webpage', 'report', 'conferencePaper']:
-                        continue
+            total_items = len(items)
+            progress = st.progress(0)
 
-                    # Extract metadata text
-                    title = item['data'].get('title', 'Untitled')
-                    abstract = item['data'].get('abstractNote', '')
-                    item_type = item['data']['itemType']
-                    notes = []
+            for item_idx, item in enumerate(items, start=1):
+                progress.progress(item_idx / (total_items or 1))
 
-                    # Get child notes
-                    children = zot.children(item['key'])
-                    for child in children:
-                        if child['data']['itemType'] == 'note':
-                            notes.append(child['data'].get('note', ''))
+                if item['data']['itemType'] not in ['journalArticle', 'webpage', 'report', 'conferencePaper', 'videoRecording', 'audioRecording', 'book', 'bookSection', 'preprint', 'document', 'presentation']:
+                    continue
 
-                    text = f"{title}\n{abstract}\n{' '.join(notes)}"
+                title = item['data'].get('title', 'Untitled')
+                abstract = item['data'].get('abstractNote', '')
+                item_type = item['data']['itemType']
 
-                    # If there are attachments (e.g., PDF or snapshot)
-                    for child in children:
-                        if child['data']['itemType'] == 'attachment':
-                            link_mode = child['data'].get('linkMode', '')
-                            if link_mode in ['linked_file', 'imported_file', 'imported_url']:
-                                # Get the file URL via API
-                                file_url = f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
-                                response = requests.get(file_url)
+                notes = []
+                try:
+                    children = zot.everything(zot.children(item['key']))
+                except Exception:
+                    children = []
+
+                for child in children:
+                    if child['data']['itemType'] == 'note':
+                        notes.append(child['data'].get('note', ''))
+
+                text = f"{title}\n{abstract}\n{' '.join(notes)}"
+
+                for child in children:
+                    if child['data']['itemType'] == 'attachment':
+                        link_mode = child['data'].get('linkMode', '')
+                        if link_mode in ['linked_file', 'imported_file', 'imported_url']:
+                            file_url = f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
+                            try:
+                                response = requests.get(file_url, timeout=10)
                                 if response.status_code == 200:
                                     content_type = response.headers.get('Content-Type', '')
                                     if 'application/pdf' in content_type:
@@ -216,110 +128,145 @@ if st.button("Load Zotero Library", type="primary"):
                                         text += f"\n{pdf_text}"
                                     elif 'text/html' in content_type:
                                         text += f"\n{response.text}"
+                            except Exception:
+                                pass
 
-                    if text.strip():
-                        low_relevance = is_item_low_relevance(item)
-                        documents.append(text)
-                        doc_ids.append(item['key'])
-                        doc_metadata.append({
-                            'title': title,
-                            'itemType': item_type,
-                            'abstract': abstract[:200] if abstract else '',
-                            'low_relevance': low_relevance
-                        })
-
-                progress_bar.empty()
-
-                if not documents:
-                    st.error("No documents found in the library.")
-                else:
-                    # Store documents in session state
-                    st.session_state.documents = documents
-                    st.session_state.doc_ids = doc_ids
-                    st.session_state.doc_metadata = doc_metadata
-
-                    # Fit TF-IDF
-                    vectorizer = TfidfVectorizer(stop_words='english')
-                    tfidf_matrix = vectorizer.fit_transform(documents)
-                    st.session_state.vectorizer = vectorizer
-                    st.session_state.tfidf_matrix = tfidf_matrix
-
-                    st.success(f"Loaded {len(documents)} documents from Zotero.")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Error loading Zotero library: {str(e)}")
-
-# Chat interface
-st.header("Query the Agile Biofoundry Knowledge Base")
-
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# User input
-if prompt := st.chat_input("Ask a question about Agile Biofoundry:"):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    if "documents" not in st.session_state or not st.session_state.documents or not openai_api_key:
-        response = "Please load the Zotero library and ensure OpenAI API key is set in secrets."
-    else:
-        try:
-            # Retrieve relevant documents using TF-IDF
-            vectorizer = st.session_state.vectorizer
-            tfidf_matrix = st.session_state.tfidf_matrix
-            query_vec = vectorizer.transform([prompt])
-            similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
-
-            # Downweight low relevance documents based on tags imported from Zotero
-            weighted_similarities = similarities.copy()
-            for idx, metadata in enumerate(st.session_state.doc_metadata):
-                if metadata.get('low_relevance', False):
-                    weighted_similarities[idx] *= 0.5
-
-            top_indices = np.argsort(weighted_similarities)[-3:][::-1]  # Top 3 documents
-            context = ""
-            cited_docs = []
-            
-            for idx in top_indices:
-                sim_score = float(weighted_similarities[idx])
-                if sim_score > 0.1:  # Threshold for relevance
-                    context += f"\n\nDocument ID: {st.session_state.doc_ids[idx]}\n{st.session_state.documents[idx][:1000]}..."
-                    cited_docs.append({
-                        'title': st.session_state.doc_metadata[idx].get('title', 'Untitled'),
-                        'id': st.session_state.doc_ids[idx],
-                        'similarity': sim_score,
-                        'low_relevance': st.session_state.doc_metadata[idx].get('low_relevance', False)
+                if text.strip():
+                    low_relevance = is_item_low_relevance(item)
+                    documents.append(text)
+                    doc_ids.append(item['key'])
+                    doc_metadata.append({
+                        'title': title,
+                        'itemType': item_type,
+                        'abstract': abstract[:200] if abstract else '',
+                        'low_relevance': low_relevance
                     })
 
-            if not context:
-                context = "No relevant documents found."
+            progress.empty()
 
-            # Prompt OpenAI
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant knowledgeable about Agile Biofoundry. Use the provided context to answer the query."},
-                    {"role": "user", "content": f"Context: {context}\n\nQuery: {prompt}"}
-                ]
-            ).choices[0].message.content
-            
-            # Add citations if documents were used
-            if cited_docs:
-                response += "\n\n---\n**Sources:**\n"
-                for doc in cited_docs:
-                    extra_tag = " (low relevance applied)" if doc.get('low_relevance') else ""
-                    response += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}){extra_tag}\n"
+            if not documents:
+                st.error("No documents found in Zotero for this collection.")
+                return
+
+            set_collection_state(collection_key, documents=documents, doc_ids=doc_ids, doc_metadata=doc_metadata)
+            if documents:
+                vectorizer = TfidfVectorizer(stop_words='english')
+                tfidf_matrix = vectorizer.fit_transform(documents)
+                set_collection_state(collection_key, vectorizer=vectorizer, tfidf_matrix=tfidf_matrix)
+
+            st.success(f"Loaded {len(documents)} documents for {collection_key}.")
+            st.experimental_rerun()
 
         except Exception as e:
-            response = f"Error generating response: {str(e)}"
+            st.error(f"Error loading Zotero collection: {e}")
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    with st.chat_message("assistant"):
-        st.markdown(response)
+
+# ==================== PAGE SETUP ====================
+st.set_page_config(page_title="Agile Biofoundry & ABPDU Query", layout="wide")
+st.title("Agile Biofoundry & ABPDU Query Tool")
+
+# Load secrets
+zotero_library_id = st.secrets.get("zotero_library_id", "")
+zotero_api_key = st.secrets.get("zotero_api_key", "")
+zotero_library_type = st.secrets.get("zotero_library_type", "user")
+openai_api_key = st.secrets.get("openai_api_key", "")
+
+# openai client
+client = OpenAI(api_key=openai_api_key) if openai_api_key else None
+
+# session initialization
+for c in COLLECTIONS:
+    init_collection_state(c['key'])
+
+# ==================== SIDEBAR ====================
+with st.sidebar:
+    st.header("Collections")
+    for c in COLLECTIONS:
+        docs = st.session_state[f"documents_{c['key']}"]
+        st.write(f"- {c['name']}: {len(docs)} docs")
+
+    st.write("---")
+    st.write("Tag rule: set Zotero tag 'low-relevance' to lower a doc's weight in retrieval.")
+
+# ==================== TAB UI ====================
+collection_tabs = st.tabs([c['name'] for c in COLLECTIONS])
+
+for tab, c in zip(collection_tabs, COLLECTIONS):
+    with tab:
+        col_key = c['key']
+        col_state = {
+            'documents': st.session_state[f"documents_{col_key}"],
+            'doc_ids': st.session_state[f"doc_ids_{col_key}"],
+            'doc_metadata': st.session_state[f"doc_metadata_{col_key}"],
+            'vectorizer': st.session_state[f"vectorizer_{col_key}"],
+            'tfidf_matrix': st.session_state[f"tfidf_matrix_{col_key}"],
+            'messages': st.session_state[f"messages_{col_key}"]
+        }
+
+        st.subheader(f"{c['name']}")
+
+        if st.button("Load Zotero Library", key=f"load_{col_key}"):
+            load_zotero_collection(col_key, c['secret'])
+
+        st.write(f"Documents loaded: {len(col_state['documents'])}")
+
+        if col_state['documents'] and col_state['vectorizer'] is not None and col_state['tfidf_matrix'] is not None:
+            # show loaded docs summary
+            if col_state['messages']:
+                for msg in col_state['messages']:
+                    with st.chat_message(msg['role']):
+                        st.markdown(msg['content'])
+
+            if prompt := st.chat_input(f"Ask about {c['name']}:", key=f"prompt_{col_key}"):
+                messages = col_state['messages'] + [{"role": "user", "content": prompt}]
+                set_collection_state(col_key, messages=messages)
+
+                query_vec = col_state['vectorizer'].transform([prompt])
+                similarities = cosine_similarity(query_vec, col_state['tfidf_matrix']).flatten()
+                weighted = similarities.copy()
+
+                for i, meta in enumerate(col_state['doc_metadata']):
+                    if meta.get('low_relevance'):
+                        weighted[i] *= 0.5
+
+                top_indices = np.argsort(weighted)[-3:][::-1]
+
+                context = ""
+                cited_docs = []
+                for idx in top_indices:
+                    if weighted[idx] > 0.1:
+                        context += f"\n\nDocument ID: {col_state['doc_ids'][idx]}\n{col_state['documents'][idx][:1000]}..."
+                        cited_docs.append({
+                            'title': col_state['doc_metadata'][idx].get('title', 'Untitled'),
+                            'id': col_state['doc_ids'][idx],
+                            'similarity': float(weighted[idx]),
+                            'low_relevance': col_state['doc_metadata'][idx].get('low_relevance', False)
+                        })
+
+                if not context:
+                    context = "No relevant documents found."
+
+                if not client:
+                    response = "OpenAI API key not set in secrets."
+                else:
+                    try:
+                        response = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": f"You are a helpful assistant for {c['name']}. Use the context to answer."},
+                                {"role": "user", "content": f"Context: {context}\n\nQuery: {prompt}"}
+                            ]
+                        ).choices[0].message.content
+
+                        if cited_docs:
+                            response += "\n\n---\n**Sources:**\n"
+                            for doc in cited_docs:
+                                extra = " (low relevance applied)" if doc.get('low_relevance') else ""
+                                response += f"- {doc['title']} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}){extra}\n"
+                    except Exception as e:
+                        response = f"Error generating response: {e}"
+
+                set_collection_state(col_key, messages=col_state['messages'] + [{"role": "assistant", "content": response}])
+                st.experimental_rerun()
+        else:
+            st.info("Load documents and wait for index before querying.")
