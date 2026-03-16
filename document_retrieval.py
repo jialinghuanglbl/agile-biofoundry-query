@@ -209,26 +209,27 @@ def retrieve_relevant_chunks(
     import numpy as np
     
     query_vec = vectorizer.transform([query])
-    similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    
-    # Get top k indices
-    top_indices = np.argsort(similarities)[-k:][::-1]
-    
+    raw_similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+
+    # Apply low-relevance reduction before selecting top k
+    low_relevance_weight = 0.55
+    adjusted_similarities = np.array([
+        raw_similarities[i] * low_relevance_weight if chunks_with_metadata[i].get('low_relevance') else raw_similarities[i]
+        for i in range(len(raw_similarities))
+    ])
+
+    # Get top k indices by adjusted similarity
+    top_indices = np.argsort(adjusted_similarities)[-k:][::-1]
+
     relevant_chunks = []
     seen_docs = {}  # Track docs we've already cited
-    
-    low_relevance_weight = 0.55
 
     for idx in top_indices:
-        raw_similarity = similarities[idx]
-        chunk = chunks_with_metadata[idx].copy()
-        if chunk.get('low_relevance'):
-            adjusted_similarity = raw_similarity * low_relevance_weight
-        else:
-            adjusted_similarity = raw_similarity
+        adjusted_score = adjusted_similarities[idx]
 
-        if adjusted_similarity > similarity_threshold:
-            chunk['similarity'] = float(adjusted_similarity)
+        if adjusted_score > similarity_threshold:
+            chunk = chunks_with_metadata[idx].copy()
+            chunk['similarity'] = float(adjusted_score)
             chunk['original_doc_index'] = doc_id_mapping[idx]
 
             doc_type = chunk.get('doc_type', '').lower()

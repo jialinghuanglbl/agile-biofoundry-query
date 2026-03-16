@@ -68,8 +68,11 @@ def is_item_low_relevance(item: dict) -> bool:
     tags = item.get('data', {}).get('tags', []) or []
     for tag in tags:
         tag_value = tag.get('tag') if isinstance(tag, dict) else str(tag)
-        normalized = tag_value.strip().lower().replace(' ', '-')
-        if normalized in ['low-relevance', 'lowrelevance', 'low-relevance']:
+        normalized = tag_value.strip().lower().replace('_', ' ').replace('-', ' ')
+        if normalized in ['low relevance', 'low-relevance', 'low_relevance', 'lowrelevance']:
+            return True
+        # Fallback: any tag containing both key terms
+        if 'low' in normalized and 'relevance' in normalized:
             return True
     return False
 
