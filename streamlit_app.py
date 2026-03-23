@@ -423,7 +423,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     if item_type not in [
                                         'journalArticle', 'webpage', 'report', 'conferencePaper',
                                         'book', 'bookSection', 'preprint', 'document', 'presentation',
-                                        'videoRecording', 'audioRecording'
+                                        'videoRecording', 'audioRecording', 'blogPost'
                                     ]:
                                         skipped_items['wrong_type'].append(f"{title} ({item_type})")
                                         continue
