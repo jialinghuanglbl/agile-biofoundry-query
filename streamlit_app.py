@@ -637,8 +637,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                         if not ensure_chunk_index_for_collection(collection_key):
                             result = "No indexed documents available to answer the query. Please load the Zotero library."
                         else:
-                            k_chunks = st.session_state.get('k_chunks', 4)
-                            similarity_threshold = 0.1
+                            k_chunks = st.session_state.get('k_chunks', 3)
+                            similarity_threshold = 0.12
 
                             relevant_chunks, seen_docs = retrieve_relevant_chunks(
                                 pending,
