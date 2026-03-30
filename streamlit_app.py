@@ -617,7 +617,6 @@ for tab, col_info in zip(tabs, COLLECTIONS):
         st.header(f"Query {collection_name}")
 
         # Use fragment to isolate the chat (prevents full rerun → no tab switch)
-        @st.fragment
         def chat_fragment(collection_key: str, collection_name: str, prefix: str):
             # Initialize chat history (move inside if needed, but session_state is fine)
             if f"{prefix}_messages" not in st.session_state:
