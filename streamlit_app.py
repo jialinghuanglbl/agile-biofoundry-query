@@ -693,8 +693,6 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             st.session_state[f'{prefix}_pending_prompt'] = None
             st.session_state[f'{prefix}_pending_assistant_index'] = None
             st.session_state[f'{prefix}_processing'] = False
-
-            st.rerun()
         
         # User input
         if prompt := st.chat_input(f"Ask about {collection_name}:", key=f"chat_input_{collection_key}"):
