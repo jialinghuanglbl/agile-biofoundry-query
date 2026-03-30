@@ -6,4 +6,3 @@ numpy
 openai
 PyPDF2
 requests
-faiss-cpu

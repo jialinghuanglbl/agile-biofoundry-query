@@ -7,6 +7,7 @@ import requests
 import io
 import os
 import json
+from streamlit_extras.bottom_container import bottom
 from article_storage import (
     load_articles,
     save_articles,
@@ -423,7 +424,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     if item_type not in [
                                         'journalArticle', 'webpage', 'report', 'conferencePaper',
                                         'book', 'bookSection', 'preprint', 'document', 'presentation',
-                                        'videoRecording', 'audioRecording'
+                                        'videoRecording', 'audioRecording', 'blogPost', 'non-PDF attachment'
                                     ]:
                                         skipped_items['wrong_type'].append(f"{title} ({item_type})")
                                         continue
@@ -706,3 +707,6 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             st.session_state[f'{prefix}_pending_assistant_index'] = len(st.session_state[f"{prefix}_messages"]) - 1
             st.session_state[f'{prefix}_processing'] = True
             st.rerun()
+
+with bottom():
+    st.write("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection") 
