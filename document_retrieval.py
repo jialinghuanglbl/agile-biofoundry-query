@@ -181,26 +181,13 @@ def create_chunked_documents(
     return chunks_with_metadata, doc_id_mapping
 
 
-def retrieve_relevant_chunks(
-    query: str,
-    vectorizer,
-    tfidf_matrix,
-    chunks_with_metadata: List[Dict],
-    doc_id_mapping: List[int],
-    faiss_index=None,
-    k: int = 5,
-    similarity_threshold: float = 0.05
-) -> List[Dict]:
+def retrieve_relevant_chunks(query: str, collection_key: str, k: int = 10, similarity_threshold: float = 0.1) -> List[Dict]:
     """
-    Retrieve the most relevant chunks for a query using TF-IDF scoring with ANN approximation.
+    Retrieve the most relevant chunks for a query using TF-IDF scoring.
     
     Args:
         query: User's question
-        vectorizer: Fitted TfidfVectorizer
-        tfidf_matrix: TF-IDF matrix of chunk texts
-        chunks_with_metadata: List of chunk metadata
-        doc_id_mapping: Mapping from chunk index to doc index
-        faiss_index: Pre-built FAISS index (optional, falls back to exact if None)
+        collection_key: The collection key
         k: Number of top chunks to retrieve
         similarity_threshold: Minimum similarity score to include
     
@@ -208,31 +195,31 @@ def retrieve_relevant_chunks(
         List of relevant chunks sorted by similarity
     """
     import numpy as np
-    from concurrent.futures import ThreadPoolExecutor
+    from sklearn.metrics.pairwise import cosine_similarity
+    prefix = f"col_{collection_key}"
+    chunks_with_metadata = st.session_state.get(f'{prefix}_chunks', [])
+    if not chunks_with_metadata:
+        return []
     
-    if faiss_index is not None:
-        # Use ANN search
-        query_vec = vectorizer.transform([query]).toarray().astype('float32')
-        
-        # ANN search: get more candidates than needed for better recall
-        search_k = min(max(k * 5, 100), len(chunks_with_metadata))
-        similarities, indices = faiss_index.search(query_vec, search_k)
-        
-        # Apply low-relevance weighting in parallel
-        low_relevance_weight = 0.425
-        def adjust_score(i):
-            raw_score = float(similarities[0][i])
-            chunk = chunks_with_metadata[indices[0][i]]
-            return raw_score * low_relevance_weight if chunk.get('low_relevance') else raw_score
-        
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            adjusted_similarities = list(executor.map(adjust_score, range(len(indices[0]))))
-        
-        # Sort by adjusted similarity
-        sorted_pairs = sorted(zip(adjusted_similarities, indices[0]), reverse=True)
-        candidate_indices = [idx for _, idx in sorted_pairs]
-    else:
-        raise ValueError("FAISS index is required for retrieval")
+    vectorizer = st.session_state.get(f'{prefix}_chunk_vectorizer')
+    tfidf_matrix = st.session_state.get(f'{prefix}_chunk_tfidf_matrix')
+    doc_id_mapping = st.session_state.get(f'{prefix}_doc_id_mapping', [])
+    
+    if vectorizer is None or tfidf_matrix is None:
+        return []
+        # TF-IDF retrieval
+    query_vec = vectorizer.transform([query])
+    similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+    # Apply low-relevance weighting
+    adjusted_similarities = []
+    for i, sim in enumerate(similarities):
+        chunk = chunks_with_metadata[i]
+        weight = 0.425 if chunk.get('low_relevance') else 1.0
+        adjusted_similarities.append(sim * weight)
+    adjusted_similarities = np.array(adjusted_similarities)
+    # Get top k
+    top_indices = adjusted_similarities.argsort()[-k:][::-1]
+    candidate_indices = top_indices
     
     relevant_chunks = []
     seen_docs = {}  # Track docs we've already cited
@@ -240,7 +227,7 @@ def retrieve_relevant_chunks(
     min_source_docs = 5
     
     for idx in candidate_indices:
-        adjusted_score = adjusted_similarities[candidate_indices.index(idx)]
+        adjusted_score = adjusted_similarities[idx]
         chunk = chunks_with_metadata[idx].copy()
         doc_id = chunk['doc_id']
     

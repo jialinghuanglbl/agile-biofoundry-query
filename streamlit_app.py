@@ -108,8 +108,7 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
     
     if (st.session_state.get(f'{prefix}_chunk_vectorizer') is not None and 
         st.session_state.get(f'{prefix}_chunk_tfidf_matrix') is not None and 
-        st.session_state.get(f'{prefix}_chunks') and
-        st.session_state.get(f'{prefix}_faiss_index') is not None):
+        st.session_state.get(f'{prefix}_chunks')):
         return True
 
     # Need documents to build index
@@ -144,19 +143,7 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
     st.session_state[f"{prefix}_chunk_vectorizer"] = chunk_vectorizer
     st.session_state[f"{prefix}_chunk_tfidf_matrix"] = chunk_tfidf_matrix
 
-    # Build FAISS index for ANN search
-    import faiss
-    import numpy as np
-    dimension = chunk_tfidf_matrix.shape[1]
-    faiss_index = faiss.IndexFlatIP(dimension)
-    # Normalize for cosine similarity
-    norms = np.linalg.norm(chunk_tfidf_matrix.toarray(), axis=1, keepdims=True)
-    norms[norms == 0] = 1
-    normalized_matrix = (chunk_tfidf_matrix.toarray() / norms).astype('float32')
-    faiss_index.add(normalized_matrix)
-    st.session_state[f"{prefix}_faiss_index"] = faiss_index
-
-    st.success(f"Auto-rebuilt index with {len(chunks)} chunks")
+    st.success(f"Auto-built TF-IDF index with {len(chunks)} chunks")
     return True
 
 
@@ -176,9 +163,9 @@ client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 
 # Initialize global retrieval settings (same for all collections)
 if 'chunk_size' not in st.session_state:
-    st.session_state.chunk_size = 400
+    st.session_state.chunk_size = 600
 if 'overlap' not in st.session_state:
-    st.session_state.overlap = 40
+    st.session_state.overlap = 100
 if 'summary_sentences' not in st.session_state:
     st.session_state.summary_sentences = 2
 if 'use_summaries' not in st.session_state:
@@ -203,12 +190,9 @@ with st.sidebar:
         
         with st.expander(f"{collection_name}", expanded=False):
             # Collection metrics
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
                 st.metric("Documents", len(st.session_state[f"{prefix}_documents"]))
-            with col3:
-                chunks_count = len(st.session_state.get(f'{prefix}_chunks', []))
-                st.metric("Chunks", chunks_count)
             
             if st.session_state[f"{prefix}_documents"]:
                 # Search documents
@@ -261,7 +245,7 @@ with st.sidebar:
                             del st.session_state[f"{prefix}_doc_ids"][idx]
                             del st.session_state[f"{prefix}_doc_metadata"][idx]
                             
-                            # Clear existing index to force rebuild, f'{prefix}_faiss_index'
+                            # Clear existing index to force rebuild
                             for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
                                 if key in st.session_state:
                                     del st.session_state[key]
@@ -282,7 +266,7 @@ with st.sidebar:
                         st.session_state[f"{prefix}_documents"] = []
                         st.session_state[f"{prefix}_doc_ids"] = []
                         st.session_state[f"{prefix}_doc_metadata"] = []
-                        for key in [f'{prefix}_vectorizer', f'{prefix}_tfidf_matrix', f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix', f'{prefix}_faiss_index']:
+                        for key in [f'{prefix}_vectorizer', f'{prefix}_tfidf_matrix', f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
                             if key in st.session_state:
                                 del st.session_state[key]
                         st.success("All cleared")
@@ -554,7 +538,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     st.session_state[f"{prefix}_tfidf_matrix"] = tfidf_matrix
                                     
                                     # Clear existing chunk index and rebuild
-                                    for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix', f'{prefix}_faiss_index']:
+                                    for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
                                         if key in st.session_state:
                                             del st.session_state[key]
                                     
@@ -710,6 +694,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             st.session_state[f'{prefix}_pending_prompt'] = None
             st.session_state[f'{prefix}_pending_assistant_index'] = None
             st.session_state[f'{prefix}_processing'] = False
+
+            st.rerun()
         
         # User input
         if prompt := st.chat_input(f"Ask about {collection_name}:", key=f"chat_input_{collection_key}"):
