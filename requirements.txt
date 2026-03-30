@@ -1,4 +1,5 @@
 streamlit
+streamlit-extras
 pyzotero
 scikit-learn
 numpy
