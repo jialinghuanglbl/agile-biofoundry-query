@@ -187,6 +187,7 @@ def retrieve_relevant_chunks(
     tfidf_matrix,
     chunks_with_metadata: List[Dict],
     doc_id_mapping: List[int],
+    faiss_index=None,
     k: int = 5,
     similarity_threshold: float = 0.05
 ) -> List[Dict]:
@@ -199,44 +200,39 @@ def retrieve_relevant_chunks(
         tfidf_matrix: TF-IDF matrix of chunk texts
         chunks_with_metadata: List of chunk metadata
         doc_id_mapping: Mapping from chunk index to doc index
+        faiss_index: Pre-built FAISS index (optional, falls back to exact if None)
         k: Number of top chunks to retrieve
         similarity_threshold: Minimum similarity score to include
     
     Returns:
         List of relevant chunks sorted by similarity
     """
-    import faiss
     import numpy as np
     from concurrent.futures import ThreadPoolExecutor
     
-    query_vec = vectorizer.transform([query]).toarray().astype('float32')
-    
-    # Build FAISS index for ANN search
-    dimension = tfidf_matrix.shape[1]
-    index = faiss.IndexFlatIP(dimension)  # Inner product for cosine (normalized vectors)
-    # Normalize TF-IDF matrix for cosine similarity
-    norms = np.linalg.norm(tfidf_matrix.toarray(), axis=1, keepdims=True)
-    norms[norms == 0] = 1  # Avoid division by zero
-    normalized_matrix = (tfidf_matrix.toarray() / norms).astype('float32')
-    index.add(normalized_matrix)
-    
-    # ANN search: get more candidates than needed for better recall
-    search_k = min(max(k * 5, 150), len(chunks_with_metadata))
-    similarities, indices = index.search(query_vec, search_k)
-    
-    # Apply low-relevance weighting in parallel
-    low_relevance_weight = 0.425
-    def adjust_score(i):
-        raw_score = float(similarities[0][i])
-        chunk = chunks_with_metadata[indices[0][i]]
-        return raw_score * low_relevance_weight if chunk.get('low_relevance') else raw_score
-    
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        adjusted_similarities = list(executor.map(adjust_score, range(len(indices[0]))))
-    
-    # Sort by adjusted similarity
-    sorted_pairs = sorted(zip(adjusted_similarities, indices[0]), reverse=True)
-    candidate_indices = [idx for _, idx in sorted_pairs]
+    if faiss_index is not None:
+        # Use ANN search
+        query_vec = vectorizer.transform([query]).toarray().astype('float32')
+        
+        # ANN search: get more candidates than needed for better recall
+        search_k = min(max(k * 5, 150), len(chunks_with_metadata))
+        similarities, indices = faiss_index.search(query_vec, search_k)
+        
+        # Apply low-relevance weighting in parallel
+        low_relevance_weight = 0.425
+        def adjust_score(i):
+            raw_score = float(similarities[0][i])
+            chunk = chunks_with_metadata[indices[0][i]]
+            return raw_score * low_relevance_weight if chunk.get('low_relevance') else raw_score
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            adjusted_similarities = list(executor.map(adjust_score, range(len(indices[0]))))
+        
+        # Sort by adjusted similarity
+        sorted_pairs = sorted(zip(adjusted_similarities, indices[0]), reverse=True)
+        candidate_indices = [idx for _, idx in sorted_pairs]
+    else:
+        raise ValueError("FAISS index is required for retrieval")
     
     relevant_chunks = []
     seen_docs = {}  # Track docs we've already cited

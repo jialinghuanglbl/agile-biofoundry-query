@@ -108,15 +108,16 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
     
     if (st.session_state.get(f'{prefix}_chunk_vectorizer') is not None and 
         st.session_state.get(f'{prefix}_chunk_tfidf_matrix') is not None and 
-        st.session_state.get(f'{prefix}_chunks')):
+        st.session_state.get(f'{prefix}_chunks') and
+        st.session_state.get(f'{prefix}_faiss_index') is not None):
         return True
 
     # Need documents to build index
     if f'{prefix}_documents' not in st.session_state or not st.session_state[f'{prefix}_documents']:
         return False
 
-    chunk_size = st.session_state.get('chunk_size', 800)
-    overlap = st.session_state.get('overlap', 150)
+    chunk_size = st.session_state.get('chunk_size', 500)
+    overlap = st.session_state.get('overlap', 50)
     summary_sentences = st.session_state.get('summary_sentences', 3)
     use_summaries = st.session_state.get('use_summaries', True)
 
@@ -142,6 +143,18 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
     chunk_tfidf_matrix = chunk_vectorizer.fit_transform(chunk_texts)
     st.session_state[f"{prefix}_chunk_vectorizer"] = chunk_vectorizer
     st.session_state[f"{prefix}_chunk_tfidf_matrix"] = chunk_tfidf_matrix
+
+    # Build FAISS index for ANN search
+    import faiss
+    import numpy as np
+    dimension = chunk_tfidf_matrix.shape[1]
+    faiss_index = faiss.IndexFlatIP(dimension)
+    # Normalize for cosine similarity
+    norms = np.linalg.norm(chunk_tfidf_matrix.toarray(), axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    normalized_matrix = (chunk_tfidf_matrix.toarray() / norms).astype('float32')
+    faiss_index.add(normalized_matrix)
+    st.session_state[f"{prefix}_faiss_index"] = faiss_index
 
     st.success(f"Auto-rebuilt index with {len(chunks)} chunks")
     return True
@@ -245,7 +258,7 @@ with st.sidebar:
                             del st.session_state[f"{prefix}_doc_ids"][idx]
                             del st.session_state[f"{prefix}_doc_metadata"][idx]
                             
-                            # Clear existing index to force rebuild
+                            # Clear existing index to force rebuild, f'{prefix}_faiss_index'
                             for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
                                 if key in st.session_state:
                                     del st.session_state[key]
@@ -266,7 +279,7 @@ with st.sidebar:
                         st.session_state[f"{prefix}_documents"] = []
                         st.session_state[f"{prefix}_doc_ids"] = []
                         st.session_state[f"{prefix}_doc_metadata"] = []
-                        for key in [f'{prefix}_vectorizer', f'{prefix}_tfidf_matrix', f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
+                        for key in [f'{prefix}_vectorizer', f'{prefix}_tfidf_matrix', f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix', f'{prefix}_faiss_index']:
                             if key in st.session_state:
                                 del st.session_state[key]
                         st.success("All cleared")
@@ -538,7 +551,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     st.session_state[f"{prefix}_tfidf_matrix"] = tfidf_matrix
                                     
                                     # Clear existing chunk index and rebuild
-                                    for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix']:
+                                    for key in [f'{prefix}_chunks', f'{prefix}_doc_id_mapping', f'{prefix}_chunk_vectorizer', f'{prefix}_chunk_tfidf_matrix', f'{prefix}_faiss_index']:
                                         if key in st.session_state:
                                             del st.session_state[key]
                                     
@@ -646,6 +659,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                 st.session_state[f"{prefix}_chunk_tfidf_matrix"],
                                 st.session_state[f"{prefix}_chunks"],
                                 st.session_state[f"{prefix}_doc_id_mapping"],
+                                faiss_index=st.session_state.get(f"{prefix}_faiss_index"),
                                 k=k_chunks,
                                 similarity_threshold=similarity_threshold
                             )
