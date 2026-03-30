@@ -624,6 +624,17 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
         
+        # User input
+        if prompt := st.chat_input(f"Ask about {collection_name}:", key=f"chat_input_{collection_key}"):
+            st.session_state[f"{prefix}_messages"].append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": "Bot is thinking..."})
+            st.session_state[f'{prefix}_pending_prompt'] = prompt
+            st.session_state[f'{prefix}_pending_assistant_index'] = len(st.session_state[f"{prefix}_messages"]) - 1
+            st.session_state[f'{prefix}_processing'] = True
+        
         # Process pending prompt
         if st.session_state.get(f'{prefix}_processing') and st.session_state.get(f'{prefix}_pending_prompt'):
             pending = st.session_state[f'{prefix}_pending_prompt']
@@ -693,18 +704,6 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             st.session_state[f'{prefix}_pending_prompt'] = None
             st.session_state[f'{prefix}_pending_assistant_index'] = None
             st.session_state[f'{prefix}_processing'] = False
-        
-        # User input
-        if prompt := st.chat_input(f"Ask about {collection_name}:", key=f"chat_input_{collection_key}"):
-            st.session_state[f"{prefix}_messages"].append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": "Bot is thinking..."})
-            st.session_state[f'{prefix}_pending_prompt'] = prompt
-            st.session_state[f'{prefix}_pending_assistant_index'] = len(st.session_state[f"{prefix}_messages"]) - 1
-            st.session_state[f'{prefix}_processing'] = True
-            st.rerun()
 
 with bottom():
     st.write("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection") 
