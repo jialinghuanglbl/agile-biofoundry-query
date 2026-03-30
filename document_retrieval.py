@@ -191,12 +191,12 @@ def retrieve_relevant_chunks(
     similarity_threshold: float = 0.05
 ) -> List[Dict]:
     """
-    Retrieve the most relevant chunks for a query using TF-IDF scoring.
+    Retrieve the most relevant chunks for a query using ANN (FAISS) for faster similarity search.
     
     Args:
         query: User's question
         vectorizer: Fitted TfidfVectorizer
-        tfidf_matrix: TF-IDF matrix of chunk texts
+        tfidf_matrix: TF-IDF matrix of chunk texts (sparse)
         chunks_with_metadata: List of chunk metadata
         doc_id_mapping: Mapping from chunk index to doc index
         k: Number of top chunks to retrieve
@@ -205,41 +205,59 @@ def retrieve_relevant_chunks(
     Returns:
         List of relevant chunks sorted by similarity
     """
+    import faiss
     from sklearn.metrics.pairwise import cosine_similarity
     import numpy as np
+    from concurrent.futures import ThreadPoolExecutor
     
-    query_vec = vectorizer.transform([query])
-    raw_similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
-
-    # Apply low-relevance reduction before selecting top k
+    query_vec = vectorizer.transform([query]).toarray().astype('float32')
+    
+    # Build FAISS index for ANN search
+    chunk_vectors = tfidf_matrix.toarray().astype('float32')
+    dim = chunk_vectors.shape[1]
+    index = faiss.IndexFlatIP(dim)  # Inner product (cosine after normalization)
+    faiss.normalize_L2(chunk_vectors)  # Normalize for cosine
+    index.add(chunk_vectors)
+    
+    # ANN search: get more candidates than k for better coverage
+    ann_k = min(k * 3, len(chunk_vectors))
+    similarities, indices = index.search(query_vec, ann_k)
+    similarities = similarities.flatten()
+    indices = indices.flatten()
+    
+    # Apply low-relevance reduction
     low_relevance_weight = 0.425
-    adjusted_similarities = np.array([
-        raw_similarities[i] * low_relevance_weight if chunks_with_metadata[i].get('low_relevance') else raw_similarities[i]
-        for i in range(len(raw_similarities))
-    ])
-
-    # Get top indices by adjusted similarity, with extra candidates to ensure source coverage
-    sorted_indices = np.argsort(adjusted_similarities)[::-1]
-    candidate_limit = max(k * 3, 20)
-    candidate_indices = sorted_indices[:min(candidate_limit, len(sorted_indices))]
-
+    adjusted_similarities = []
+    for i, idx in enumerate(indices):
+        chunk = chunks_with_metadata[idx]
+        raw_sim = similarities[i]
+        if chunk.get('low_relevance'):
+            adjusted_sim = raw_sim * low_relevance_weight
+        else:
+            adjusted_sim = raw_sim
+        adjusted_similarities.append((idx, adjusted_sim))
+    
+    # Sort by adjusted similarity and take top candidates
+    adjusted_similarities.sort(key=lambda x: x[1], reverse=True)
+    candidate_indices = [idx for idx, sim in adjusted_similarities[:ann_k]]
+    
     relevant_chunks = []
     seen_docs = {}  # Track docs we've already cited
     doc_ids_included = set()
     min_source_docs = 5
-
+    
     for idx in candidate_indices:
-        adjusted_score = adjusted_similarities[idx]
+        adjusted_score = adjusted_similarities[[i for i, (cidx, _) in enumerate(adjusted_similarities) if cidx == idx][0]][1]
         chunk = chunks_with_metadata[idx].copy()
         doc_id = chunk['doc_id']
-
+        
         should_include = adjusted_score > similarity_threshold or len(doc_ids_included) < min_source_docs
         if not should_include:
             continue
-
+        
         chunk['similarity'] = float(adjusted_score)
         chunk['original_doc_index'] = doc_id_mapping[idx]
-
+        
         doc_type = chunk.get('doc_type', '').lower()
         # decide what to annotate: articles (pdf/text) get pages; videos/audio (transcripts) get timestamps
         if doc_type in ['videorecording', 'audiorecording'] or 'transcript' in doc_type:
@@ -252,10 +270,10 @@ def retrieve_relevant_chunks(
             page_match = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
             chunk['page'] = page_match.group(1) if page_match else None
             chunk['timestamp'] = None
-
+        
         relevant_chunks.append(chunk)
         doc_ids_included.add(doc_id)
-
+        
         if doc_id not in seen_docs:
             seen_docs[doc_id] = {
                 'title': chunk['doc_title'],
@@ -265,21 +283,21 @@ def retrieve_relevant_chunks(
                 'pages': set(),
                 'timestamps': set()
             }
-
+        
         seen_docs[doc_id]['chunk_count'] += 1
         seen_docs[doc_id]['max_similarity'] = max(seen_docs[doc_id]['max_similarity'], chunk['similarity'])
         if chunk.get('page'):
             seen_docs[doc_id]['pages'].add(chunk['page'])
         if chunk.get('timestamp'):
             seen_docs[doc_id]['timestamps'].add(chunk['timestamp'])
-
+        
         if len(doc_ids_included) >= min_source_docs and len(relevant_chunks) >= k:
             break
-
-    # Ensure we still return a top-k chunk set even if the source minimum wasn't reached (e.g., small dataset)
+    
+    # Ensure we still return a top-k chunk set
     if len(relevant_chunks) > k:
         relevant_chunks = relevant_chunks[:k]
-
+    
     return relevant_chunks, seen_docs
 
 

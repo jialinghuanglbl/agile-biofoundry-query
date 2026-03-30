@@ -611,108 +611,109 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                 del st.session_state[f"{prefix}_last_load_report"]
                 st.rerun()
         
-
         # ==================== CHAT INTERFACE ====================
         st.divider()
         st.header(f"Query {collection_name}")
-
-        # Use fragment to isolate the chat (prevents full rerun → no tab switch)
-        def chat_fragment(collection_key: str, collection_name: str, prefix: str):
-            # Initialize chat history (move inside if needed, but session_state is fine)
-            if f"{prefix}_messages" not in st.session_state:
-                st.session_state[f"{prefix}_messages"] = []
-
-            # Display chat history
-            for message in st.session_state[f"{prefix}_messages"]:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
-
-            # Process pending prompt (inside fragment)
-            if st.session_state.get(f'{prefix}_processing') and st.session_state.get(f'{prefix}_pending_prompt'):
-                pending = st.session_state[f'{prefix}_pending_prompt']
-                try:
-                    with st.spinner("Thinking..."):
-                        cache_key = f"{collection_key}:{pending.lower().strip()}"
-                        if cache_key in st.session_state.query_cache:
-                            result = st.session_state.query_cache[cache_key]
+        
+        # Initialize chat history for this collection
+        if f"{prefix}_messages" not in st.session_state:
+            st.session_state[f"{prefix}_messages"] = []
+        
+        # Display chat
+        for message in st.session_state[f"{prefix}_messages"]:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+        
+        # Process pending prompt
+        if st.session_state.get(f'{prefix}_processing') and st.session_state.get(f'{prefix}_pending_prompt'):
+            pending = st.session_state[f'{prefix}_pending_prompt']
+            try:
+                with st.spinner("Typing..."):
+                    # Check cache first
+                    cache_key = f"{collection_key}:{pending.lower().strip()}"
+                    if cache_key in st.session_state.query_cache:
+                        result = st.session_state.query_cache[cache_key]
+                    else:
+                        if not ensure_chunk_index_for_collection(collection_key):
+                            result = "No indexed documents available to answer the query. Please load the Zotero library."
                         else:
-                            if not ensure_chunk_index_for_collection(collection_key):
-                                result = "No indexed documents available..."
+                            k_chunks = st.session_state.get('k_chunks', 4)
+                            similarity_threshold = 0.1
+
+                            relevant_chunks, seen_docs = retrieve_relevant_chunks(
+                                pending,
+                                st.session_state[f"{prefix}_chunk_vectorizer"],
+                                st.session_state[f"{prefix}_chunk_tfidf_matrix"],
+                                st.session_state[f"{prefix}_chunks"],
+                                st.session_state[f"{prefix}_doc_id_mapping"],
+                                k=k_chunks,
+                                similarity_threshold=similarity_threshold
+                            )
+
+                            use_summaries = st.session_state.get('use_summaries', True)
+                            context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
+
+                            if not context or context == "":
+                                context = "No relevant documents found."
+
+                            if client is None:
+                                result = "OpenAI API key is not set. Please add it to Streamlit secrets to enable the assistant."
                             else:
-                                k_chunks = st.session_state.get('k_chunks', 4)
-                                similarity_threshold = 0.1
-
-                                relevant_chunks, seen_docs = retrieve_relevant_chunks(
-                                    pending,
-                                    st.session_state[f"{prefix}_chunk_vectorizer"],
-                                    st.session_state[f"{prefix}_chunk_tfidf_matrix"],
-                                    st.session_state[f"{prefix}_chunks"],
-                                    st.session_state[f"{prefix}_doc_id_mapping"],
-                                    k=k_chunks,
-                                    similarity_threshold=similarity_threshold
+                                # Streaming response for faster perceived speed
+                                response = client.chat.completions.create(
+                                    model="gpt-4o-mini",
+                                    messages=[
+                                        {"role": "system", "content": f"You are a helpful assistant knowledgeable about {collection_name}. Use the provided context to answer the query comprehensively."},
+                                        {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {pending}"}
+                                    ],
+                                    stream=True
                                 )
-
-                                use_summaries = st.session_state.get('use_summaries', True)
-                                context, cited_docs = format_context_from_chunks(relevant_chunks, seen_docs, use_summaries=use_summaries)
-
-                                if not context or context == "":
-                                    context = "No relevant documents found."
-
-                                if client is None:
-                                    result = "OpenAI API key is not set. Please add it to Streamlit secrets to enable the assistant."
-                                else:
-                                    result = client.chat.completions.create(
-                                        model="gpt-4o-mini",
-                                        messages=[
-                                            {"role": "system", "content": f"You are a helpful assistant knowledgeable about {collection_name}. Use the provided context to answer the query comprehensively."},
-                                            {"role": "user", "content": f"Context from knowledge base:\n{context}\n\nQuery: {pending}"}
-                                        ]
-                                    ).choices[0].message.content
-
-                                    if cited_docs:
-                                        result += "\n\n---\n**Sources:**\n"
-                                        for doc in cited_docs:
-                                            extra = []
-                                            if doc.get('pages'):
-                                                extra.append("pages " + ",".join(doc['pages']))
-                                            if doc.get('timestamps'):
-                                                extra.append("times " + ",".join(doc['timestamps']))
-                                            extras = f" ({'; '.join(extra)})" if extra else ""
-                                            result += f"- {doc['title']}{extras} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
-
-
+                                
+                                result = ""
+                                for chunk in response:
+                                    if chunk.choices[0].delta.content:
+                                        result += chunk.choices[0].delta.content
+                                
+                                if cited_docs:
+                                    result += "\n\n---\n**Sources:**\n"
+                                    for doc in cited_docs:
+                                        extra = []
+                                        if doc.get('pages'):
+                                            extra.append("pages " + ",".join(doc['pages']))
+                                        if doc.get('timestamps'):
+                                            extra.append("times " + ",".join(doc['timestamps']))
+                                        extras = f" ({'; '.join(extra)})" if extra else ""
+                                        result += f"- {doc['title']}{extras} (ID: {doc['id']}, Relevance: {doc['similarity']:.2%}, Chunks: {doc['chunk_count']})\n"
+                        
+                        # Cache the result
                         st.session_state.query_cache[cache_key] = result
-                except Exception as e:
-                    result = f"Error: {str(e)}"
+            except Exception as e:
+                result = f"Error generating response: {str(e)}"
 
-                # Update or append assistant message
-                assistant_idx = st.session_state.get(f'{prefix}_pending_assistant_index')
-                if assistant_idx is not None and assistant_idx < len(st.session_state[f"{prefix}_messages"]):
-                    st.session_state[f"{prefix}_messages"][assistant_idx]['content'] = result
-                else:
-                    st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": result})
+            # Update message
+            assistant_idx = st.session_state.get(f'{prefix}_pending_assistant_index')
+            if assistant_idx is not None and assistant_idx < len(st.session_state[f"{prefix}_messages"]):
+                st.session_state[f"{prefix}_messages"][assistant_idx]['content'] = result
+            else:
+                st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": result})
 
-                # Clear pending state
-                st.session_state[f'{prefix}_pending_prompt'] = None
-                st.session_state[f'{prefix}_pending_assistant_index'] = None
-                st.session_state[f'{prefix}_processing'] = False
+            st.session_state[f'{prefix}_pending_prompt'] = None
+            st.session_state[f'{prefix}_pending_assistant_index'] = None
+            st.session_state[f'{prefix}_processing'] = False
 
-                # NO st.rerun() here — fragment handles update
-                # st.rerun()  ← remove this line
+            st.rerun()
+        
+        # User input
+        if prompt := st.chat_input(f"Ask about {collection_name}:", key=f"chat_input_{collection_key}"):
+            st.session_state[f"{prefix}_messages"].append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-            # User input
-            if prompt := st.chat_input(f"Ask about {collection_name}:", key=f"chat_input_{collection_key}"):
-                st.session_state[f"{prefix}_messages"].append({"role": "user", "content": prompt})
-                st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": "Thinking..."})
-                st.session_state[f'{prefix}_pending_prompt'] = prompt
-                st.session_state[f'{prefix}_pending_assistant_index'] = len(st.session_state[f"{prefix}_messages"]) - 1
-                st.session_state[f'{prefix}_processing'] = True
-                # NO st.rerun() — let the fragment rerun itself
-
-        # Call the fragment
-        chat_fragment(collection_key, collection_name, prefix)
+            st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": "Bot is thinking..."})
+            st.session_state[f'{prefix}_pending_prompt'] = prompt
+            st.session_state[f'{prefix}_pending_assistant_index'] = len(st.session_state[f"{prefix}_messages"]) - 1
+            st.session_state[f'{prefix}_processing'] = True
+            st.rerun()
 
 with bottom():
     st.write("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection") 
-
-
