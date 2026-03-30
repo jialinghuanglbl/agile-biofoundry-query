@@ -7,7 +7,6 @@ import requests
 import io
 import os
 import json
-from streamlit_extras.bottom_container import bottom
 from article_storage import (
     load_articles,
     save_articles,
@@ -115,8 +114,8 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
     if f'{prefix}_documents' not in st.session_state or not st.session_state[f'{prefix}_documents']:
         return False
 
-    chunk_size = st.session_state.get('chunk_size', 500)
-    overlap = st.session_state.get('overlap', 50)
+    chunk_size = st.session_state.get('chunk_size', 800)
+    overlap = st.session_state.get('overlap', 150)
     summary_sentences = st.session_state.get('summary_sentences', 3)
     use_summaries = st.session_state.get('use_summaries', True)
 
@@ -143,7 +142,7 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
     st.session_state[f"{prefix}_chunk_vectorizer"] = chunk_vectorizer
     st.session_state[f"{prefix}_chunk_tfidf_matrix"] = chunk_tfidf_matrix
 
-    st.success(f"Auto-built TF-IDF index with {len(chunks)} chunks")
+    st.success(f"Auto-rebuilt index with {len(chunks)} chunks")
     return True
 
 
@@ -424,7 +423,7 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                     if item_type not in [
                                         'journalArticle', 'webpage', 'report', 'conferencePaper',
                                         'book', 'bookSection', 'preprint', 'document', 'presentation',
-                                        'videoRecording', 'audioRecording', 'blogPost', 'non-PDF attachment'
+                                        'videoRecording', 'audioRecording'
                                     ]:
                                         skipped_items['wrong_type'].append(f"{title} ({item_type})")
                                         continue
@@ -637,8 +636,8 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                         if not ensure_chunk_index_for_collection(collection_key):
                             result = "No indexed documents available to answer the query. Please load the Zotero library."
                         else:
-                            k_chunks = st.session_state.get('k_chunks', 3)
-                            similarity_threshold = 0.12
+                            k_chunks = st.session_state.get('k_chunks', 4)
+                            similarity_threshold = 0.1
 
                             relevant_chunks, seen_docs = retrieve_relevant_chunks(
                                 pending,
@@ -646,7 +645,6 @@ for tab, col_info in zip(tabs, COLLECTIONS):
                                 st.session_state[f"{prefix}_chunk_tfidf_matrix"],
                                 st.session_state[f"{prefix}_chunks"],
                                 st.session_state[f"{prefix}_doc_id_mapping"],
-                                faiss_index=st.session_state.get(f"{prefix}_faiss_index"),
                                 k=k_chunks,
                                 similarity_threshold=similarity_threshold
                             )
@@ -708,6 +706,3 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             st.session_state[f'{prefix}_pending_assistant_index'] = len(st.session_state[f"{prefix}_messages"]) - 1
             st.session_state[f'{prefix}_processing'] = True
             st.rerun()
-
-with bottom():
-    st.write("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection") 

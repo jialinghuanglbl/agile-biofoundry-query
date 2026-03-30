@@ -181,102 +181,89 @@ def create_chunked_documents(
     return chunks_with_metadata, doc_id_mapping
 
 
-def retrieve_relevant_chunks(query: str, collection_key: str, k: int = 10, similarity_threshold: float = 0.1) -> List[Dict]:
+def retrieve_relevant_chunks(
+    query: str,
+    vectorizer,
+    tfidf_matrix,
+    chunks_with_metadata: List[Dict],
+    doc_id_mapping: List[int],
+    k: int = 5,
+    similarity_threshold: float = 0.05
+) -> List[Dict]:
     """
     Retrieve the most relevant chunks for a query using TF-IDF scoring.
     
     Args:
         query: User's question
-        collection_key: The collection key
+        vectorizer: Fitted TfidfVectorizer
+        tfidf_matrix: TF-IDF matrix of chunk texts
+        chunks_with_metadata: List of chunk metadata
+        doc_id_mapping: Mapping from chunk index to doc index
         k: Number of top chunks to retrieve
         similarity_threshold: Minimum similarity score to include
     
     Returns:
         List of relevant chunks sorted by similarity
     """
-    import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity
-    prefix = f"col_{collection_key}"
-    chunks_with_metadata = st.session_state.get(f'{prefix}_chunks', [])
-    if not chunks_with_metadata:
-        return []
+    import numpy as np
     
-    vectorizer = st.session_state.get(f'{prefix}_chunk_vectorizer')
-    tfidf_matrix = st.session_state.get(f'{prefix}_chunk_tfidf_matrix')
-    doc_id_mapping = st.session_state.get(f'{prefix}_doc_id_mapping', [])
-    
-    if vectorizer is None or tfidf_matrix is None:
-        return []
-        # TF-IDF retrieval
     query_vec = vectorizer.transform([query])
-    similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    # Apply low-relevance weighting
-    adjusted_similarities = []
-    for i, sim in enumerate(similarities):
-        chunk = chunks_with_metadata[i]
-        weight = 0.425 if chunk.get('low_relevance') else 1.0
-        adjusted_similarities.append(sim * weight)
-    adjusted_similarities = np.array(adjusted_similarities)
-    # Get top k
-    top_indices = adjusted_similarities.argsort()[-k:][::-1]
-    candidate_indices = top_indices
-    
+    raw_similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+
+    # Apply low-relevance reduction before selecting top k
+    low_relevance_weight = 0.425
+    adjusted_similarities = np.array([
+        raw_similarities[i] * low_relevance_weight if chunks_with_metadata[i].get('low_relevance') else raw_similarities[i]
+        for i in range(len(raw_similarities))
+    ])
+
+    # Get top k indices by adjusted similarity
+    top_indices = np.argsort(adjusted_similarities)[-k:][::-1]
+
     relevant_chunks = []
     seen_docs = {}  # Track docs we've already cited
-    doc_ids_included = set()
-    min_source_docs = 5
-    
-    for idx in candidate_indices:
+
+    for idx in top_indices:
         adjusted_score = adjusted_similarities[idx]
-        chunk = chunks_with_metadata[idx].copy()
-        doc_id = chunk['doc_id']
-    
-        should_include = adjusted_score > similarity_threshold or len(doc_ids_included) < min_source_docs
-        if not should_include:
-            continue
-    
-        chunk['similarity'] = float(adjusted_score)
-        chunk['original_doc_index'] = doc_id_mapping[idx]
-    
-        doc_type = chunk.get('doc_type', '').lower()
-        # decide what to annotate: articles (pdf/text) get pages; videos/audio (transcripts) get timestamps
-        if doc_type in ['videorecording', 'audiorecording'] or 'transcript' in doc_type:
-            # timestamp detection only
-            ts_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
-            chunk['page'] = None
-            chunk['timestamp'] = ts_match.group(0) if ts_match else None
-        else:
-            # page-number detection only
-            page_match = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
-            chunk['page'] = page_match.group(1) if page_match else None
-            chunk['timestamp'] = None
-    
-        relevant_chunks.append(chunk)
-        doc_ids_included.add(doc_id)
-    
-        if doc_id not in seen_docs:
-            seen_docs[doc_id] = {
-                'title': chunk['doc_title'],
-                'type': chunk['doc_type'],
-                'max_similarity': chunk['similarity'],
-                'chunk_count': 0,
-                'pages': set(),
-                'timestamps': set()
-            }
-    
-        seen_docs[doc_id]['chunk_count'] += 1
-        seen_docs[doc_id]['max_similarity'] = max(seen_docs[doc_id]['max_similarity'], chunk['similarity'])
-        if chunk.get('page'):
-            seen_docs[doc_id]['pages'].add(chunk['page'])
-        if chunk.get('timestamp'):
-            seen_docs[doc_id]['timestamps'].add(chunk['timestamp'])
-    
-        if len(doc_ids_included) >= min_source_docs and len(relevant_chunks) >= k:
-            break
-    
-    # Ensure we still return a top-k chunk set even if the source minimum wasn't reached (e.g., small dataset)
-    if len(relevant_chunks) > k:
-        relevant_chunks = relevant_chunks[:k]
+
+        if adjusted_score > similarity_threshold:
+            chunk = chunks_with_metadata[idx].copy()
+            chunk['similarity'] = float(adjusted_score)
+            chunk['original_doc_index'] = doc_id_mapping[idx]
+
+            doc_type = chunk.get('doc_type', '').lower()
+            # decide what to annotate: articles (pdf/text) get pages; videos/audio (transcripts) get timestamps
+            if doc_type in ['videorecording', 'audiorecording'] or 'transcript' in doc_type:
+                # timestamp detection only
+                ts_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
+                chunk['page'] = None
+                chunk['timestamp'] = ts_match.group(0) if ts_match else None
+            else:
+                # page-number detection only
+                page_match = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
+                chunk['page'] = page_match.group(1) if page_match else None
+                chunk['timestamp'] = None
+
+            relevant_chunks.append(chunk)
+
+            # Track which docs we're citing, including page/time info
+            doc_id = chunk['doc_id']
+            if doc_id not in seen_docs:
+                seen_docs[doc_id] = {
+                    'title': chunk['doc_title'],
+                    'type': chunk['doc_type'],
+                    'max_similarity': chunk['similarity'],
+                    'chunk_count': 0,
+                    'pages': set(),
+                    'timestamps': set()
+                }
+            seen_docs[doc_id]['chunk_count'] += 1
+            seen_docs[doc_id]['max_similarity'] = max(seen_docs[doc_id]['max_similarity'], chunk['similarity'])
+            if chunk.get('page'):
+                seen_docs[doc_id]['pages'].add(chunk['page'])
+            if chunk.get('timestamp'):
+                seen_docs[doc_id]['timestamps'].add(chunk['timestamp'])
     
     return relevant_chunks, seen_docs
 
