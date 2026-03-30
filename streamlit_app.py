@@ -176,9 +176,9 @@ client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 
 # Initialize global retrieval settings (same for all collections)
 if 'chunk_size' not in st.session_state:
-    st.session_state.chunk_size = 600
+    st.session_state.chunk_size = 400
 if 'overlap' not in st.session_state:
-    st.session_state.overlap = 100
+    st.session_state.overlap = 40
 if 'summary_sentences' not in st.session_state:
     st.session_state.summary_sentences = 2
 if 'use_summaries' not in st.session_state:
@@ -203,9 +203,12 @@ with st.sidebar:
         
         with st.expander(f"{collection_name}", expanded=False):
             # Collection metrics
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Documents", len(st.session_state[f"{prefix}_documents"]))
+            with col3:
+                chunks_count = len(st.session_state.get(f'{prefix}_chunks', []))
+                st.metric("Chunks", chunks_count)
             
             if st.session_state[f"{prefix}_documents"]:
                 # Search documents
@@ -707,8 +710,6 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             st.session_state[f'{prefix}_pending_prompt'] = None
             st.session_state[f'{prefix}_pending_assistant_index'] = None
             st.session_state[f'{prefix}_processing'] = False
-
-            st.rerun()
         
         # User input
         if prompt := st.chat_input(f"Ask about {collection_name}:", key=f"chat_input_{collection_key}"):

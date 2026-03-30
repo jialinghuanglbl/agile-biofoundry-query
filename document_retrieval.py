@@ -215,7 +215,7 @@ def retrieve_relevant_chunks(
         query_vec = vectorizer.transform([query]).toarray().astype('float32')
         
         # ANN search: get more candidates than needed for better recall
-        search_k = min(max(k * 5, 150), len(chunks_with_metadata))
+        search_k = min(max(k * 5, 100), len(chunks_with_metadata))
         similarities, indices = faiss_index.search(query_vec, search_k)
         
         # Apply low-relevance weighting in parallel
