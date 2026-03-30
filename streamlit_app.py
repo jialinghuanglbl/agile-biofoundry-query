@@ -706,3 +706,5 @@ for tab, col_info in zip(tabs, COLLECTIONS):
             st.session_state[f'{prefix}_pending_assistant_index'] = len(st.session_state[f"{prefix}_messages"]) - 1
             st.session_state[f'{prefix}_processing'] = True
             st.rerun()
+
+st.subheader("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection") 
