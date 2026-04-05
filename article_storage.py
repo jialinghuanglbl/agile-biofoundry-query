@@ -10,16 +10,14 @@ import json
 import os
 from typing import List, Dict, Tuple
 
+
 def _get_data_dir():
     """Return the local data directory for storing articles."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "zotero_data")
 
 
 def _get_articles_file(collection_name: str = "default") -> str:
-    """Get the file path for a specific collection.
-
-    Files are stored in the `zotero_data/` directory.
-    """
+    """Get the file path for a specific collection."""
     data_dir = _get_data_dir()
     return os.path.join(data_dir, f"zotero_articles_{collection_name}.json")
 
@@ -37,18 +35,14 @@ def load_articles(collection_name: str = "default") -> Dict:
 
 
 def save_articles(data: Dict, collection_name: str = "default") -> None:
-    """Save articles to persistent storage using an atomic write for a
-    specific collection.
-    """
+    """Save articles to persistent storage using an atomic write."""
     articles_file = _get_articles_file(collection_name)
-    # Ensure parent dir exists (should already) and write atomically
     os.makedirs(os.path.dirname(articles_file), exist_ok=True)
     tmp_path = articles_file + ".tmp"
     with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    # Atomically replace
     os.replace(tmp_path, articles_file)
 
 
@@ -56,7 +50,7 @@ def article_exists(zotero_id: str, articles_data: Dict = None, collection_name: 
     """Check if an article already exists by Zotero ID"""
     if articles_data is None:
         articles_data = load_articles(collection_name)
-    return zotero_id in articles_data["metadata"]
+    return zotero_id in articles_data.get("metadata", {})
 
 
 def add_article(
@@ -68,22 +62,14 @@ def add_article(
     collection_name: str = "default",
     low_relevance: bool = False
 ) -> Tuple[bool, str]:
-    """
-    Add an article to storage if it doesn't already exist
-    
-    Returns:
-        Tuple of (success: bool, message: str)
-    """
+    """Add an article to storage if it doesn't already exist"""
     articles_data = load_articles(collection_name)
     
     if article_exists(zotero_id, articles_data, collection_name):
         return False, f"Article '{title}' already exists (ID: {zotero_id})"
     
-    # Add article content
-    articles_data["articles"].append(content)
-    
-    # Store metadata with Zotero ID as key
-    articles_data["metadata"][zotero_id] = {
+    articles_data.setdefault("articles", []).append(content)
+    articles_data.setdefault("metadata", {})[zotero_id] = {
         "title": title,
         "itemType": item_type,
         "abstract": abstract[:200] if abstract else "",
@@ -96,17 +82,10 @@ def add_article(
 
 
 def get_all_articles(collection_name: str = "default") -> Tuple[List[str], List[str], List[Dict]]:
-    """
-    Get all stored articles for a collection
-    
-    Returns:
-        Tuple of (documents, doc_ids, doc_metadata)
-    """
+    """Get all stored articles for a collection"""
     articles_data = load_articles(collection_name)
     documents = articles_data.get("articles", [])
     
-    # Reconstruct doc_ids and doc_metadata in index order if possible
-    # Build a list of (zid, meta) sorted by stored index to preserve ordering
     metadata = articles_data.get("metadata", {})
     sorted_items = sorted(metadata.items(), key=lambda kv: kv[1].get("index", 0))
 
@@ -137,18 +116,13 @@ def remove_article(zotero_id: str, collection_name: str = "default") -> Tuple[bo
     metadata = articles_data["metadata"][zotero_id]
     index = metadata.get("index")
     
-    # Remove from articles list
     if index is not None and index < len(articles_data["articles"]):
         articles_data["articles"].pop(index)
-        
-        # Update indices in metadata
         for zid, meta in articles_data["metadata"].items():
             if meta.get("index", -1) > index:
                 meta["index"] -= 1
     
-    # Remove metadata
     del articles_data["metadata"][zotero_id]
-    
     save_articles(articles_data, collection_name)
     title = metadata.get("title", "Untitled")
     return True, f"Article '{title}' removed"
@@ -175,4 +149,4 @@ def clear_all_articles(collection_name: str = "default") -> str:
 def get_article_count(collection_name: str = "default") -> int:
     """Get count of stored articles for a collection"""
     articles_data = load_articles(collection_name)
-    return len(articles_data["articles"])
+    return len(articles_data.get("articles", []))

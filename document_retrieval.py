@@ -1,116 +1,132 @@
 """
-Document Retrieval Module
-Implements intelligent document chunking and retrieval strategies
+Document Retrieval Module – OPTIMIZED FOR LONG TRANSCRIPTS & ACADEMIC PAPERS
+- Persistent FAISS + chunk cache on disk
+- Smart long-document detection (5hr videos + 100+ page articles)
+- Smaller chunks and tighter summaries for speed
+- Pre-built FAISS index (fast retrieval)
 """
 
 import re
-from typing import List, Tuple, Dict
+import os
+import joblib
+import shutil
+import faiss
+import numpy as np
+from typing import List, Tuple, Dict, Optional
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 
-def chunk_document(document: str, chunk_size: int = 800, overlap: int = 150) -> List[Dict]:
-    """
-    Split a document into overlapping chunks for better context retrieval.
+def _get_cache_dir(collection_key: str) -> str:
+    """Return cache directory for this collection."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_dir = os.path.join(base_dir, "zotero_cache", collection_key)
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def clear_chunk_cache(collection_key: str) -> None:
+    """Delete persistent cache when documents change."""
+    cache_dir = _get_cache_dir(collection_key)
+    if os.path.exists(cache_dir):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def save_chunk_index(
+    chunks: List[Dict],
+    doc_id_mapping: List[int],
+    vectorizer,
+    faiss_index,
+    collection_key: str
+) -> None:
+    """Save chunks, vectorizer and FAISS index to disk."""
+    cache_dir = _get_cache_dir(collection_key)
+    joblib.dump(chunks, os.path.join(cache_dir, "chunks.joblib"))
+    joblib.dump(doc_id_mapping, os.path.join(cache_dir, "doc_id_mapping.joblib"))
+    joblib.dump(vectorizer, os.path.join(cache_dir, "chunk_vectorizer.joblib"))
+    faiss.write_index(faiss_index, os.path.join(cache_dir, "faiss_index.bin"))
+
+
+def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int], TfidfVectorizer, faiss.Index]]:
+    """Load persisted index if available."""
+    cache_dir = _get_cache_dir(collection_key)
+    chunks_path = os.path.join(cache_dir, "chunks.joblib")
+    if not os.path.exists(chunks_path):
+        return None
     
-    Args:
-        document: Full text of the document
-        chunk_size: Target size of each chunk in characters
-        overlap: Target overlap in characters (approximate, converted to words)
-    
-    Returns:
-        List of chunk dictionaries with text and position info
-    """
-    # Try to split on sentences first for coherence
+    chunks = joblib.load(chunks_path)
+    doc_id_mapping = joblib.load(os.path.join(cache_dir, "doc_id_mapping.joblib"))
+    vectorizer = joblib.load(os.path.join(cache_dir, "chunk_vectorizer.joblib"))
+    faiss_index = faiss.read_index(os.path.join(cache_dir, "faiss_index.bin"))
+    return chunks, doc_id_mapping, vectorizer, faiss_index
+
+
+def chunk_document(document: str, chunk_size: int = 500, overlap: int = 80) -> List[Dict]:
+    """Sentence-aware overlapping chunks."""
     sentences = re.split(r'(?<=[.!?])\s+', document)
-    
     chunks = []
     current_chunk = ""
     chunk_start_idx = 0
-    
+
     for sentence in sentences:
-        # Check if adding this sentence would exceed chunk size
-        potential_chunk = current_chunk + " " + sentence if current_chunk else sentence
-        
-        if len(potential_chunk) > chunk_size and current_chunk:
-            # Save current chunk and start new one
+        potential = current_chunk + " " + sentence if current_chunk else sentence
+        if len(potential) > chunk_size and current_chunk:
             chunks.append({
                 'text': current_chunk.strip(),
                 'start': chunk_start_idx,
                 'end': chunk_start_idx + len(current_chunk)
             })
-            
-            # Compute approximate overlap in words (to avoid chopping words/sentences)
-            approx_words = max(1, overlap // 5)  # assume ~5 chars/word
+            approx_words = max(1, overlap // 5)
             overlap_text = " ".join(current_chunk.split()[-approx_words:])
             current_chunk = overlap_text + " " + sentence
-            chunk_start_idx = chunk_start_idx + len(current_chunk) - len(overlap_text)
+            chunk_start_idx += len(current_chunk) - len(overlap_text)
         else:
-            current_chunk = potential_chunk
-    
-    # Add final chunk
+            current_chunk = potential
+
     if current_chunk.strip():
         chunks.append({
             'text': current_chunk.strip(),
             'start': chunk_start_idx,
             'end': chunk_start_idx + len(current_chunk)
         })
-    
     return chunks
 
 
 def is_transcript_doc(document: str, metadata: Dict) -> bool:
-    """Heuristic to detect if a document is a transcript (e.g., YouTube).
+    """Detect transcripts + force fine chunking for very long content."""
+    title = metadata.get('title', '').lower()
+    abstract = metadata.get('abstract', '').lower()
 
-    Checks title/abstract for keywords, looks for timestamp patterns, and
-    inspects line lengths to decide.
-    """
-    title = metadata.get('title', '').lower() if metadata else ''
-    abstract = metadata.get('abstract', '').lower() if metadata else ''
-
-    if 'transcript' in title or 'transcript' in abstract:
+    if any(kw in title or kw in abstract for kw in ['transcript', 'youtube', 'video', 'audio']):
         return True
-    if 'youtube' in title or 'youtube' in abstract:
-        return True
-
-    # Timestamp patterns like 00:01 or 1:23:45
     if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", document):
         return True
 
-    # If the document has many short lines, it's likely a transcript
     lines = [ln.strip() for ln in document.splitlines() if ln.strip()]
-    if len(lines) >= 10:
-        avg_len = sum(len(ln) for ln in lines) / len(lines)
-        if avg_len < 100:
-            return True
+    if len(lines) >= 10 and (sum(len(ln) for ln in lines) / len(lines)) < 100:
+        return True
+
+    # Force fine chunking for long documents
+    if len(document) > 30000 or len(lines) > 400:
+        return True
 
     return False
 
 
 def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) -> List[Dict]:
-    """Chunk a transcript-like document by fixed character windows after cleanup."""
-    # Remove obvious timestamps
+    """Fixed-size chunking optimized for long transcripts."""
     doc = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", document)
     doc = re.sub(r"\s+", " ", doc).strip()
-
     chunks = []
     step = max(1, chunk_size - overlap)
     for start in range(0, len(doc), step):
         text = doc[start:start + chunk_size].strip()
-        if not text:
-            continue
-        chunks.append({
-            'text': text,
-            'start': start,
-            'end': start + len(text)
-        })
-
+        if text:
+            chunks.append({'text': text, 'start': start, 'end': start + len(text)})
     return chunks
 
 
-def summarize_chunk(text: str, max_sentences: int = 2) -> str:
-    """
-    Simple extractive summarization: pick the top scoring sentences by TF-IDF.
-    This is fast and keeps important sentences while reducing token usage.
-    """
+def summarize_chunk(text: str, max_sentences: int = 1) -> str:
+    """Fast extractive summary (1 sentence by default)."""
     from sklearn.feature_extraction.text import TfidfVectorizer
     import numpy as np
 
@@ -123,11 +139,8 @@ def summarize_chunk(text: str, max_sentences: int = 2) -> str:
         X = vec.fit_transform(sentences)
         scores = X.sum(axis=1).A1
         top_idx = np.argsort(scores)[-max_sentences:]
-        top_idx_sorted = sorted(top_idx)
-        summary = " ".join([sentences[i].strip() for i in top_idx_sorted])
-        return summary
+        return " ".join(sentences[i].strip() for i in sorted(top_idx))
     except Exception:
-        # Fallback: return the first few sentences
         return " ".join(sentences[:max_sentences]).strip()
 
 
@@ -135,36 +148,24 @@ def create_chunked_documents(
     documents: List[str],
     doc_ids: List[str],
     doc_metadata: List[Dict],
-    chunk_size: int = 800,
-    overlap: int = 150,
-    summary_sentences: int = 3
-) -> Tuple[List[Dict], List[str]]:
-    """
-    Create chunks for all documents and maintain mapping to original documents.
-    Supports summarization of chunks to reduce token usage during retrieval.
-    
-    Returns:
-        Tuple of (chunks_with_metadata, doc_id_mapping)
-        - chunks_with_metadata: List of chunk dicts with original doc info
-        - doc_id_mapping: List mapping chunk index to original doc index
-    """
+    chunk_size: int = 500,
+    overlap: int = 80,
+    summary_sentences: int = 1
+) -> Tuple[List[Dict], List[int]]:
+    """Create optimized chunks with long-doc handling."""
     chunks_with_metadata = []
     doc_id_mapping = []
 
     for doc_idx, (document, doc_id, metadata) in enumerate(zip(documents, doc_ids, doc_metadata)):
-        # If this looks like a transcript (YouTube/video), use narrower, fixed-size chunking
         if is_transcript_doc(document, metadata):
-            # narrower chunking and smaller summaries for transcripts
-            transcript_chunk_size = min(400, chunk_size)
-            transcript_overlap = min(80, overlap)
-            chunks = chunk_transcript(document, chunk_size=transcript_chunk_size, overlap=transcript_overlap)
-            use_summary_sentences = max(1, summary_sentences - 1)
+            chunks = chunk_transcript(document, min(400, chunk_size), min(80, overlap))
+            use_summary_sentences = 1
         else:
-            chunks = chunk_document(document, chunk_size=chunk_size, overlap=overlap)
+            chunks = chunk_document(document, chunk_size, overlap)
             use_summary_sentences = summary_sentences
 
         for chunk in chunks:
-            summary = summarize_chunk(chunk['text'], max_sentences=use_summary_sentences)
+            summary = summarize_chunk(chunk['text'], use_summary_sentences)
             chunk_data = {
                 'text': chunk['text'],
                 'summary': summary,
@@ -184,96 +185,60 @@ def create_chunked_documents(
 def retrieve_relevant_chunks(
     query: str,
     vectorizer,
-    tfidf_matrix,
     chunks_with_metadata: List[Dict],
     doc_id_mapping: List[int],
-    k: int = 5,
-    similarity_threshold: float = 0.05
-) -> List[Dict]:
-    """
-    Retrieve the most relevant chunks for a query using ANN (FAISS) for faster similarity search.
-    
-    Args:
-        query: User's question
-        vectorizer: Fitted TfidfVectorizer
-        tfidf_matrix: TF-IDF matrix of chunk texts (sparse)
-        chunks_with_metadata: List of chunk metadata
-        doc_id_mapping: Mapping from chunk index to doc index
-        k: Number of top chunks to retrieve
-        similarity_threshold: Minimum similarity score to include
-    
-    Returns:
-        List of relevant chunks sorted by similarity
-    """
-    import faiss
-    from sklearn.metrics.pairwise import cosine_similarity
-    import numpy as np
-    from concurrent.futures import ThreadPoolExecutor
-    
+    faiss_index=None,
+    k: int = 3,
+    similarity_threshold: float = 0.12
+) -> Tuple[List[Dict], Dict]:
+    """Fast retrieval using pre-built FAISS index."""
     query_vec = vectorizer.transform([query]).toarray().astype('float32')
-    
-    # Build FAISS index for ANN search
-    chunk_vectors = tfidf_matrix.toarray().astype('float32')
-    dim = chunk_vectors.shape[1]
-    index = faiss.IndexFlatIP(dim)  # Inner product (cosine after normalization)
-    faiss.normalize_L2(chunk_vectors)  # Normalize for cosine
-    index.add(chunk_vectors)
-    
-    # ANN search: get more candidates than k for better coverage
-    ann_k = min(k * 3, len(chunk_vectors))
-    similarities, indices = index.search(query_vec, ann_k)
+    faiss.normalize_L2(query_vec)
+
+    ann_k = min(k * 4, len(chunks_with_metadata))
+    similarities, indices = faiss_index.search(query_vec, ann_k)
     similarities = similarities.flatten()
     indices = indices.flatten()
-    
-    # Apply low-relevance reduction
+
+    # Low-relevance penalty
     low_relevance_weight = 0.425
-    adjusted_similarities = []
+    adjusted = []
     for i, idx in enumerate(indices):
         chunk = chunks_with_metadata[idx]
-        raw_sim = similarities[i]
-        if chunk.get('low_relevance'):
-            adjusted_sim = raw_sim * low_relevance_weight
-        else:
-            adjusted_sim = raw_sim
-        adjusted_similarities.append((idx, adjusted_sim))
-    
-    # Sort by adjusted similarity and take top candidates
-    adjusted_similarities.sort(key=lambda x: x[1], reverse=True)
-    candidate_indices = [idx for idx, sim in adjusted_similarities[:ann_k]]
-    
+        adj_sim = similarities[i] * low_relevance_weight if chunk.get('low_relevance') else similarities[i]
+        adjusted.append((idx, adj_sim))
+
+    adjusted.sort(key=lambda x: x[1], reverse=True)
+    candidate_indices = [idx for idx, _ in adjusted[:ann_k]]
+
     relevant_chunks = []
-    seen_docs = {}  # Track docs we've already cited
+    seen_docs = {}
     doc_ids_included = set()
-    min_source_docs = 5
-    
+
     for idx in candidate_indices:
-        adjusted_score = adjusted_similarities[[i for i, (cidx, _) in enumerate(adjusted_similarities) if cidx == idx][0]][1]
+        adj_score = next(s for i, s in adjusted if i == idx)
+        if adj_score <= similarity_threshold and len(doc_ids_included) >= 5:
+            continue
+
         chunk = chunks_with_metadata[idx].copy()
         doc_id = chunk['doc_id']
-        
-        should_include = adjusted_score > similarity_threshold or len(doc_ids_included) < min_source_docs
-        if not should_include:
-            continue
-        
-        chunk['similarity'] = float(adjusted_score)
+        chunk['similarity'] = float(adj_score)
         chunk['original_doc_index'] = doc_id_mapping[idx]
-        
+
+        # Page / timestamp
         doc_type = chunk.get('doc_type', '').lower()
-        # decide what to annotate: articles (pdf/text) get pages; videos/audio (transcripts) get timestamps
         if doc_type in ['videorecording', 'audiorecording'] or 'transcript' in doc_type:
-            # timestamp detection only
-            ts_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
+            ts = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
+            chunk['timestamp'] = ts.group(0) if ts else None
             chunk['page'] = None
-            chunk['timestamp'] = ts_match.group(0) if ts_match else None
         else:
-            # page-number detection only
-            page_match = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
-            chunk['page'] = page_match.group(1) if page_match else None
+            pg = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
+            chunk['page'] = pg.group(1) if pg else None
             chunk['timestamp'] = None
-        
+
         relevant_chunks.append(chunk)
         doc_ids_included.add(doc_id)
-        
+
         if doc_id not in seen_docs:
             seen_docs[doc_id] = {
                 'title': chunk['doc_title'],
@@ -283,21 +248,19 @@ def retrieve_relevant_chunks(
                 'pages': set(),
                 'timestamps': set()
             }
-        
         seen_docs[doc_id]['chunk_count'] += 1
         seen_docs[doc_id]['max_similarity'] = max(seen_docs[doc_id]['max_similarity'], chunk['similarity'])
         if chunk.get('page'):
             seen_docs[doc_id]['pages'].add(chunk['page'])
         if chunk.get('timestamp'):
             seen_docs[doc_id]['timestamps'].add(chunk['timestamp'])
-        
-        if len(doc_ids_included) >= min_source_docs and len(relevant_chunks) >= k:
+
+        if len(doc_ids_included) >= 5 and len(relevant_chunks) >= k:
             break
-    
-    # Ensure we still return a top-k chunk set
+
     if len(relevant_chunks) > k:
         relevant_chunks = relevant_chunks[:k]
-    
+
     return relevant_chunks, seen_docs
 
 
@@ -306,44 +269,30 @@ def format_context_from_chunks(
     seen_docs: Dict,
     use_summaries: bool = True
 ) -> Tuple[str, List[Dict]]:
-    """
-    Format retrieved chunks into context string for the LLM.
-
-    If `use_summaries` is True, include chunk summaries (shorter). Otherwise include full chunk text.
-    Returns:
-        Tuple of (formatted_context, cited_docs_list)
-    """
+    """Format context for LLM."""
     context_parts = []
-
-    # Group chunks by document for better readability
     chunks_by_doc = {}
     for chunk in relevant_chunks:
-        doc_id = chunk['doc_id']
-        if doc_id not in chunks_by_doc:
-            chunks_by_doc[doc_id] = []
-        chunks_by_doc[doc_id].append(chunk)
+        chunks_by_doc.setdefault(chunk['doc_id'], []).append(chunk)
 
-    # Format context by document
     for doc_id, chunks in chunks_by_doc.items():
         title = chunks[0]['doc_title']
         context_parts.append(f"\n**Source: {title}**")
-
         for i, chunk in enumerate(chunks, 1):
-            text_to_include = chunk.get('summary') if use_summaries and chunk.get('summary') else chunk['text']
+            text = chunk.get('summary') if use_summaries and chunk.get('summary') else chunk['text']
             notes = []
             if chunk.get('page'):
                 notes.append(f"page {chunk['page']}")
             if chunk.get('timestamp'):
                 notes.append(f"~{chunk['timestamp']}")
-            section_label = f"[Section {i}"
+            section = f"[Section {i}"
             if notes:
-                section_label += " (" + ", ".join(notes) + ")"
-            section_label += "]"
-            context_parts.append(f"\n{section_label}\n{text_to_include}")
+                section += f" ({', '.join(notes)})"
+            section += "]"
+            context_parts.append(f"\n{section}\n{text}")
 
     context = "\n".join(context_parts)
 
-    # Create citations list
     cited_docs = []
     for doc_id, info in seen_docs.items():
         entry = {
@@ -353,7 +302,7 @@ def format_context_from_chunks(
             'chunk_count': info['chunk_count']
         }
         if info.get('pages'):
-            entry['pages'] = sorted(info['pages'], key=lambda x: int(x))
+            entry['pages'] = sorted(info['pages'], key=int)
         if info.get('timestamps'):
             entry['timestamps'] = sorted(info['timestamps'])
         cited_docs.append(entry)
