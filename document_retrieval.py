@@ -1,7 +1,5 @@
 """
 Document Retrieval Module – OPTIMIZED FOR LONG TRANSCRIPTS & ACADEMIC PAPERS
-- Persistent FAISS + chunk cache on disk
-- Smart long-document detection
 """
 
 import re
@@ -12,14 +10,14 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Safe FAISS import with helpful error
+# Safe FAISS import
 try:
     import faiss
     FAISS_AVAILABLE = True
 except ImportError:
     faiss = None
     FAISS_AVAILABLE = False
-    print("WARNING: faiss not installed. Install with: pip install faiss-cpu")
+    print("WARNING: faiss not installed. Run: pip install faiss-cpu")
 
 
 def _get_cache_dir(collection_key: str) -> str:
@@ -30,6 +28,7 @@ def _get_cache_dir(collection_key: str) -> str:
 
 
 def clear_chunk_cache(collection_key: str) -> None:
+    """Clear persistent cache when documents change."""
     cache_dir = _get_cache_dir(collection_key)
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir, ignore_errors=True)
@@ -42,7 +41,7 @@ def save_chunk_index(
     faiss_index,
     collection_key: str
 ) -> None:
-    if not FAISS_AVAILABLE:
+    if not FAISS_AVAILABLE or faiss_index is None:
         return
     cache_dir = _get_cache_dir(collection_key)
     joblib.dump(chunks, os.path.join(cache_dir, "chunks.joblib"))
@@ -59,14 +58,17 @@ def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int
     if not os.path.exists(chunks_path):
         return None
     
-    chunks = joblib.load(chunks_path)
-    doc_id_mapping = joblib.load(os.path.join(cache_dir, "doc_id_mapping.joblib"))
-    vectorizer = joblib.load(os.path.join(cache_dir, "chunk_vectorizer.joblib"))
-    faiss_index = faiss.read_index(os.path.join(cache_dir, "faiss_index.bin"))
-    return chunks, doc_id_mapping, vectorizer, faiss_index
+    try:
+        chunks = joblib.load(chunks_path)
+        doc_id_mapping = joblib.load(os.path.join(cache_dir, "doc_id_mapping.joblib"))
+        vectorizer = joblib.load(os.path.join(cache_dir, "chunk_vectorizer.joblib"))
+        faiss_index = faiss.read_index(os.path.join(cache_dir, "faiss_index.bin"))
+        return chunks, doc_id_mapping, vectorizer, faiss_index
+    except Exception:
+        return None
 
 
-# ==================== CHUNKING FUNCTIONS (unchanged from previous) ====================
+# ==================== CHUNKING ====================
 def chunk_document(document: str, chunk_size: int = 500, overlap: int = 80) -> List[Dict]:
     sentences = re.split(r'(?<=[.!?])\s+', document)
     chunks = []
@@ -101,18 +103,18 @@ def is_transcript_doc(document: str, metadata: Dict) -> bool:
     title = metadata.get('title', '').lower()
     abstract = metadata.get('abstract', '').lower()
 
-    if any(kw in title or kw in abstract for kw in ['transcript', 'youtube', 'video', 'audio']):
+    if any(kw in (title + abstract) for kw in ['transcript', 'youtube', 'video', 'audio']):
         return True
     if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", document):
         return True
 
     lines = [ln.strip() for ln in document.splitlines() if ln.strip()]
-    if len(lines) >= 10 and (sum(len(ln) for ln in lines) / len(lines)) < 100:
+    if len(lines) >= 10 and sum(len(ln) for ln in lines) / len(lines) < 100:
         return True
 
+    # Force fine chunking for very long content
     if len(document) > 30000 or len(lines) > 400:
         return True
-
     return False
 
 
@@ -193,7 +195,7 @@ def retrieve_relevant_chunks(
     similarity_threshold: float = 0.12
 ) -> Tuple[List[Dict], Dict]:
     if not FAISS_AVAILABLE or faiss_index is None:
-        raise ImportError("FAISS is not available. Please install faiss-cpu: pip install faiss-cpu")
+        raise ImportError("FAISS is required but not available. Make sure faiss-cpu is installed.")
 
     query_vec = vectorizer.transform([query]).toarray().astype('float32')
     faiss.normalize_L2(query_vec)
@@ -218,7 +220,7 @@ def retrieve_relevant_chunks(
     doc_ids_included = set()
 
     for idx in candidate_indices:
-        adj_score = next(s for i, s in adjusted if i == idx)
+        adj_score = next((s for i, s in adjusted if i == idx), 0)
         if adj_score <= similarity_threshold and len(doc_ids_included) >= 5:
             continue
 
@@ -251,7 +253,7 @@ def retrieve_relevant_chunks(
             }
         info = seen_docs[doc_id]
         info['chunk_count'] += 1
-        info['max_similarity'] = max(info['max_similarity'], chunk['similarity'])
+        info['max_similarity'] = max(info.get('max_similarity', 0), chunk['similarity'])
         if chunk.get('page'):
             info['pages'].add(chunk['page'])
         if chunk.get('timestamp'):

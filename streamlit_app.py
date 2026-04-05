@@ -124,7 +124,7 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
 
 # ==================== MAIN APP ====================
 st.set_page_config(page_title="Agile Biofoundry & ABPDU Query Tool", layout="wide")
-st.title("🧬 Agile Biofoundry & ABPDU Query Tool")
+st.title("Agile Biofoundry & ABPDU Query Tool")
 
 zotero_library_id = _safe_secret("zotero_library_id")
 zotero_api_key = _safe_secret("zotero_api_key")
@@ -152,7 +152,7 @@ for col_info in COLLECTIONS:
 
 # ==================== SIDEBAR ====================
 with st.sidebar:
-    st.header("📚 Collections & Documents")
+    st.header("Collections & Documents")
     for col_info in COLLECTIONS:
         collection_key = col_info["collection_key"]
         collection_name = col_info["name"]
@@ -234,12 +234,12 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
         collection_key = col_info["collection_key"]
         prefix = f"col_{collection_key}"
         
-        st.header(f"📖 {col_info['name']} Collection")
+        st.header(f"{col_info['name']} Collection")
         
         # ==================== LOAD FROM ZOTERO BUTTON ====================
         col_load1, col_load2 = st.columns([3, 1])
         with col_load1:
-            if st.button(f"🔄 Load from Zotero - {col_info['name']}", type="primary", key=f"load_btn_{collection_key}"):
+            if st.button(f"Load from Zotero - {col_info['name']}", type="primary", key=f"load_btn_{collection_key}"):
                 if not zotero_library_id or not zotero_api_key:
                     st.error("Zotero Library ID and API Key must be set in secrets.")
                 else:
@@ -292,7 +292,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                 clear_chunk_cache(collection_key)
                                 ensure_chunk_index_for_collection(collection_key)
                                 
-                                st.success(f"✅ Loaded {new_count} new documents. Total: {len(documents)}")
+                                st.success(f"Loaded {new_count} new documents. Total: {len(documents)}")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Error loading from Zotero: {str(e)}")
@@ -300,7 +300,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
         st.divider()
         
         # ==================== CHAT INTERFACE ====================
-        st.subheader("💬 Ask Questions")
+        st.subheader("Ask Questions")
         
         if f"{prefix}_messages" not in st.session_state:
             st.session_state[f"{prefix}_messages"] = []
