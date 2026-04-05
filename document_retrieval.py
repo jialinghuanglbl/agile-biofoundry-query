@@ -1,23 +1,28 @@
 """
 Document Retrieval Module – OPTIMIZED FOR LONG TRANSCRIPTS & ACADEMIC PAPERS
 - Persistent FAISS + chunk cache on disk
-- Smart long-document detection (5hr videos + 100+ page articles)
-- Smaller chunks and tighter summaries for speed
-- Pre-built FAISS index (fast retrieval)
+- Smart long-document detection
 """
 
 import re
 import os
 import joblib
 import shutil
-import faiss
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+# Safe FAISS import with helpful error
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    faiss = None
+    FAISS_AVAILABLE = False
+    print("WARNING: faiss not installed. Install with: pip install faiss-cpu")
+
 
 def _get_cache_dir(collection_key: str) -> str:
-    """Return cache directory for this collection."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     cache_dir = os.path.join(base_dir, "zotero_cache", collection_key)
     os.makedirs(cache_dir, exist_ok=True)
@@ -25,7 +30,6 @@ def _get_cache_dir(collection_key: str) -> str:
 
 
 def clear_chunk_cache(collection_key: str) -> None:
-    """Delete persistent cache when documents change."""
     cache_dir = _get_cache_dir(collection_key)
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir, ignore_errors=True)
@@ -38,7 +42,8 @@ def save_chunk_index(
     faiss_index,
     collection_key: str
 ) -> None:
-    """Save chunks, vectorizer and FAISS index to disk."""
+    if not FAISS_AVAILABLE:
+        return
     cache_dir = _get_cache_dir(collection_key)
     joblib.dump(chunks, os.path.join(cache_dir, "chunks.joblib"))
     joblib.dump(doc_id_mapping, os.path.join(cache_dir, "doc_id_mapping.joblib"))
@@ -46,8 +51,9 @@ def save_chunk_index(
     faiss.write_index(faiss_index, os.path.join(cache_dir, "faiss_index.bin"))
 
 
-def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int], TfidfVectorizer, faiss.Index]]:
-    """Load persisted index if available."""
+def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int], TfidfVectorizer, "faiss.Index"]]:
+    if not FAISS_AVAILABLE:
+        return None
     cache_dir = _get_cache_dir(collection_key)
     chunks_path = os.path.join(cache_dir, "chunks.joblib")
     if not os.path.exists(chunks_path):
@@ -60,8 +66,8 @@ def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int
     return chunks, doc_id_mapping, vectorizer, faiss_index
 
 
+# ==================== CHUNKING FUNCTIONS (unchanged from previous) ====================
 def chunk_document(document: str, chunk_size: int = 500, overlap: int = 80) -> List[Dict]:
-    """Sentence-aware overlapping chunks."""
     sentences = re.split(r'(?<=[.!?])\s+', document)
     chunks = []
     current_chunk = ""
@@ -92,7 +98,6 @@ def chunk_document(document: str, chunk_size: int = 500, overlap: int = 80) -> L
 
 
 def is_transcript_doc(document: str, metadata: Dict) -> bool:
-    """Detect transcripts + force fine chunking for very long content."""
     title = metadata.get('title', '').lower()
     abstract = metadata.get('abstract', '').lower()
 
@@ -105,7 +110,6 @@ def is_transcript_doc(document: str, metadata: Dict) -> bool:
     if len(lines) >= 10 and (sum(len(ln) for ln in lines) / len(lines)) < 100:
         return True
 
-    # Force fine chunking for long documents
     if len(document) > 30000 or len(lines) > 400:
         return True
 
@@ -113,7 +117,6 @@ def is_transcript_doc(document: str, metadata: Dict) -> bool:
 
 
 def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) -> List[Dict]:
-    """Fixed-size chunking optimized for long transcripts."""
     doc = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", document)
     doc = re.sub(r"\s+", " ", doc).strip()
     chunks = []
@@ -126,7 +129,6 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
 
 
 def summarize_chunk(text: str, max_sentences: int = 1) -> str:
-    """Fast extractive summary (1 sentence by default)."""
     from sklearn.feature_extraction.text import TfidfVectorizer
     import numpy as np
 
@@ -152,7 +154,6 @@ def create_chunked_documents(
     overlap: int = 80,
     summary_sentences: int = 1
 ) -> Tuple[List[Dict], List[int]]:
-    """Create optimized chunks with long-doc handling."""
     chunks_with_metadata = []
     doc_id_mapping = []
 
@@ -174,7 +175,7 @@ def create_chunked_documents(
                 'doc_type': metadata.get('itemType', 'Unknown'),
                 'doc_abstract': metadata.get('abstract', ''),
                 'low_relevance': metadata.get('low_relevance', False),
-                'chunk_position': len([c for c in chunks_with_metadata if c['doc_id'] == doc_id])
+                'chunk_position': len([c for c in chunks_with_metadata if c.get('doc_id') == doc_id])
             }
             chunks_with_metadata.append(chunk_data)
             doc_id_mapping.append(doc_idx)
@@ -191,7 +192,9 @@ def retrieve_relevant_chunks(
     k: int = 3,
     similarity_threshold: float = 0.12
 ) -> Tuple[List[Dict], Dict]:
-    """Fast retrieval using pre-built FAISS index."""
+    if not FAISS_AVAILABLE or faiss_index is None:
+        raise ImportError("FAISS is not available. Please install faiss-cpu: pip install faiss-cpu")
+
     query_vec = vectorizer.transform([query]).toarray().astype('float32')
     faiss.normalize_L2(query_vec)
 
@@ -200,7 +203,6 @@ def retrieve_relevant_chunks(
     similarities = similarities.flatten()
     indices = indices.flatten()
 
-    # Low-relevance penalty
     low_relevance_weight = 0.425
     adjusted = []
     for i, idx in enumerate(indices):
@@ -225,7 +227,6 @@ def retrieve_relevant_chunks(
         chunk['similarity'] = float(adj_score)
         chunk['original_doc_index'] = doc_id_mapping[idx]
 
-        # Page / timestamp
         doc_type = chunk.get('doc_type', '').lower()
         if doc_type in ['videorecording', 'audiorecording'] or 'transcript' in doc_type:
             ts = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
@@ -248,12 +249,13 @@ def retrieve_relevant_chunks(
                 'pages': set(),
                 'timestamps': set()
             }
-        seen_docs[doc_id]['chunk_count'] += 1
-        seen_docs[doc_id]['max_similarity'] = max(seen_docs[doc_id]['max_similarity'], chunk['similarity'])
+        info = seen_docs[doc_id]
+        info['chunk_count'] += 1
+        info['max_similarity'] = max(info['max_similarity'], chunk['similarity'])
         if chunk.get('page'):
-            seen_docs[doc_id]['pages'].add(chunk['page'])
+            info['pages'].add(chunk['page'])
         if chunk.get('timestamp'):
-            seen_docs[doc_id]['timestamps'].add(chunk['timestamp'])
+            info['timestamps'].add(chunk['timestamp'])
 
         if len(doc_ids_included) >= 5 and len(relevant_chunks) >= k:
             break
@@ -269,7 +271,6 @@ def format_context_from_chunks(
     seen_docs: Dict,
     use_summaries: bool = True
 ) -> Tuple[str, List[Dict]]:
-    """Format context for LLM."""
     context_parts = []
     chunks_by_doc = {}
     for chunk in relevant_chunks:

@@ -7,3 +7,4 @@ openai
 PyPDF2
 requests
 faiss-cpu
+joblib
