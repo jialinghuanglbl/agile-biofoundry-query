@@ -8,6 +8,14 @@ import io
 import json
 from streamlit_extras.bottom_container import bottom
 
+# Safe FAISS import
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    faiss = None
+    FAISS_AVAILABLE = False
+
 from article_storage import (
     load_articles, add_article, get_all_articles, remove_article,
     clear_all_articles, rename_article, article_exists
@@ -110,10 +118,13 @@ def ensure_chunk_index_for_collection(collection_key: str) -> bool:
     vectorizer = TfidfVectorizer(stop_words='english')
     tfidf_matrix = vectorizer.fit_transform(chunk_texts)
 
-    chunk_vectors = tfidf_matrix.toarray().astype('float32')
-    faiss.normalize_L2(chunk_vectors)
-    faiss_index = faiss.IndexFlatIP(chunk_vectors.shape[1])
-    faiss_index.add(chunk_vectors)
+    if FAISS_AVAILABLE:
+        chunk_vectors = tfidf_matrix.toarray().astype('float32')
+        faiss.normalize_L2(chunk_vectors)
+        faiss_index = faiss.IndexFlatIP(chunk_vectors.shape[1])
+        faiss_index.add(chunk_vectors)
+    else:
+        faiss_index = None
 
     st.session_state[f"{prefix}_chunk_vectorizer"] = vectorizer
     st.session_state[f"{prefix}_faiss_index"] = faiss_index
