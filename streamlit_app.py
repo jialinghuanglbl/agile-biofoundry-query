@@ -104,7 +104,7 @@ def _build_index_for_collection(collection_key: str) -> bool:
         documents,
         st.session_state[f"{prefix}_doc_ids"],
         st.session_state[f"{prefix}_doc_metadata"],
-        chunk_size=500, overlap=80, summary_sentences=1
+        chunk_size=400, overlap=80, summary_sentences=1
     )
     if not chunks:
         return False
