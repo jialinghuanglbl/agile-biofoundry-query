@@ -1,6 +1,7 @@
 import streamlit as st
 from pyzotero import zotero
 from sklearn.feature_extraction.text import TfidfVectorizer
+from openai import OpenAI
 from groq import Groq
 import PyPDF2
 import requests
@@ -479,12 +480,13 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                     )
 
                     stream = client.chat.completions.create(
+                        #model="llama-3.3-70b-versatile",
                         model="llama-3.3-70b-versatile",
                         messages=[
                             {
                                 "role": "system",
                                 "content": (
-                                    f"You are a concise assistant for {col_info['name']}. "
+                                    f"You are a helpful assistant for {col_info['name']}. "
                                     "Answer in 2-4 sentences unless the question genuinely requires more. "
                                     "Base your answer only on the provided context. "
                                     "If the context does not contain enough information, say so briefly."
