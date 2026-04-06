@@ -1,7 +1,7 @@
 import streamlit as st
 from pyzotero import zotero
 from sklearn.feature_extraction.text import TfidfVectorizer
-from openai import OpenAI
+from groq import Groq
 import PyPDF2
 import requests
 import io
@@ -34,6 +34,10 @@ COLLECTIONS = [
     {"name": "Agile BioFoundry", "collection_key": "agile"},
     {"name": "ABPDU", "collection_key": "abpdu"},
 ]
+
+SIDEBAR_PAGE_SIZE = 10   # documents rendered per page in sidebar
+MAX_CONTEXT_CHARS = 800  # max chars per chunk sent to Groq
+
 
 # ==================== HELPERS ====================
 def extract_pdf_text(pdf_content):
@@ -72,16 +76,7 @@ def is_item_low_relevance(item: dict) -> bool:
 
 
 # ==================== INDEX MANAGEMENT ====================
-# Indexes live entirely in st.session_state. They are loaded from disk once
-# per session via _bootstrap_indexes() which runs before any UI is drawn.
-# No index work happens during the tab render loop, so the UI never grays out
-# waiting for index operations.
-
 def _build_index_for_collection(collection_key: str) -> bool:
-    """
-    Load the FAISS index from disk into session_state, or build and persist
-    a new one if no disk cache exists. Returns True if an index is available.
-    """
     prefix = f"col_{collection_key}"
 
     if f"{prefix}_documents" not in st.session_state:
@@ -90,7 +85,6 @@ def _build_index_for_collection(collection_key: str) -> bool:
         st.session_state[f"{prefix}_doc_ids"] = doc_ids
         st.session_state[f"{prefix}_doc_metadata"] = doc_metadata
 
-    # Fast path: load from disk cache
     loaded = load_chunk_index(collection_key)
     if loaded:
         chunks, doc_id_mapping, vectorizer, faiss_index = loaded
@@ -100,7 +94,6 @@ def _build_index_for_collection(collection_key: str) -> bool:
         st.session_state[f"{prefix}_faiss_index"] = faiss_index
         return True
 
-    # Slow path: build fresh
     documents = st.session_state.get(f"{prefix}_documents", [])
     if not documents:
         return False
@@ -136,11 +129,6 @@ def _build_index_for_collection(collection_key: str) -> bool:
 
 
 def _bootstrap_indexes():
-    """
-    Load all indexes from disk into session_state on first page load.
-    Skipped on all subsequent reruns because the flag is already set.
-    Disk reads are fast (joblib + faiss binary), so this does not block the UI.
-    """
     if st.session_state.get("_indexes_bootstrapped"):
         return
     for col_info in COLLECTIONS:
@@ -149,10 +137,6 @@ def _bootstrap_indexes():
 
 
 def invalidate_index(collection_key: str):
-    """
-    Drop the in-memory index for one collection and clear its disk cache.
-    Called after any document change (add, delete, rename, clear).
-    """
     prefix = f"col_{collection_key}"
     for key in ["_chunks", "_doc_id_mapping", "_chunk_vectorizer", "_faiss_index"]:
         st.session_state.pop(f"{prefix}{key}", None)
@@ -169,21 +153,68 @@ def index_ready(collection_key: str) -> bool:
     )
 
 
+# ==================== CONTEXT BUILDER ====================
+def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tuple:
+    """
+    Same as format_context_from_chunks but caps each chunk's text at
+    MAX_CONTEXT_CHARS before sending to the model. The full text is still
+    stored in session state for display purposes.
+    """
+    context_parts = []
+    chunks_by_doc = {}
+    for chunk in relevant_chunks:
+        chunks_by_doc.setdefault(chunk['doc_id'], []).append(chunk)
+
+    for doc_id, chunks in chunks_by_doc.items():
+        title = chunks[0]['doc_title']
+        context_parts.append(f"\n**Source: {title}**")
+        for i, chunk in enumerate(chunks, 1):
+            text = chunk.get('summary') if use_summaries and chunk.get('summary') else chunk['text']
+            # Cap here — reduces tokens sent to Groq significantly
+            text = text[:MAX_CONTEXT_CHARS]
+            notes = []
+            if chunk.get('page'):
+                notes.append(f"page {chunk['page']}")
+            if chunk.get('timestamp'):
+                notes.append(f"~{chunk['timestamp']}")
+            section = f"[Section {i}"
+            if notes:
+                section += f" ({', '.join(notes)})"
+            section += "]"
+            context_parts.append(f"\n{section}\n{text}")
+
+    context = "\n".join(context_parts)
+
+    cited_docs = []
+    for doc_id, info in seen_docs.items():
+        entry = {
+            'title': info['title'],
+            'id': doc_id,
+            'similarity': info['max_similarity'],
+            'chunk_count': info['chunk_count']
+        }
+        if info.get('pages'):
+            entry['pages'] = sorted(info['pages'], key=int)
+        if info.get('timestamps'):
+            entry['timestamps'] = sorted(info['timestamps'])
+        cited_docs.append(entry)
+
+    return context, cited_docs
+
+
 # ==================== APP SETUP ====================
 st.set_page_config(page_title="Agile Biofoundry & ABPDU Query Tool", layout="wide")
 
-# Run before any UI. On the very first load this reads .joblib files from disk
-# (fast). On every subsequent rerun the flag is already set and this is a no-op.
 _bootstrap_indexes()
 
 st.title("Agile Biofoundry & ABPDU Query Tool")
 
 zotero_library_id = _safe_secret("zotero_library_id")
-zotero_api_key = _safe_secret("zotero_api_key")
+zotero_api_key    = _safe_secret("zotero_api_key")
 zotero_library_type = _safe_secret("zotero_library_type", "user")
-openai_api_key = _safe_secret("openai_api_key")
+groq_api_key      = _safe_secret("groq_api_key")
 
-client = OpenAI(api_key=openai_api_key) if openai_api_key else None
+client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 if 'use_summaries' not in st.session_state:
     st.session_state.use_summaries = True
@@ -192,39 +223,85 @@ if 'k_chunks' not in st.session_state:
 if 'query_cache' not in st.session_state:
     st.session_state.query_cache = {}
 
+
 # ==================== SIDEBAR ====================
 with st.sidebar:
     st.header("Collections & Documents")
+
     for col_info in COLLECTIONS:
         collection_key = col_info["collection_key"]
         collection_name = col_info["name"]
         prefix = f"col_{collection_key}"
 
         with st.expander(f"{collection_name}", expanded=False):
-            st.metric("Documents", len(st.session_state.get(f"{prefix}_documents", [])))
+            docs      = st.session_state.get(f"{prefix}_doc_metadata", [])
+            doc_ids   = st.session_state.get(f"{prefix}_doc_ids", [])
+            doc_count = len(docs)
+            st.metric("Documents", doc_count)
+
+            # Search filter — stored in session state so it survives reruns
+            # without resetting pagination
+            search_key = f"search_{collection_key}"
+            page_key   = f"sidebar_page_{collection_key}"
+            if search_key not in st.session_state:
+                st.session_state[search_key] = ""
+            if page_key not in st.session_state:
+                st.session_state[page_key] = 0
 
             search_term = st.text_input(
                 f"Search {collection_name}",
-                key=f"search_{collection_key}",
-                placeholder="Search documents..."
+                key=search_key,
+                placeholder="Search documents...",
+                on_change=lambda: st.session_state.update({page_key: 0})
             )
 
-            docs = st.session_state.get(f"{prefix}_doc_metadata", [])
-            filtered_docs = [
+            # Build filtered index list once — no popover rendering yet
+            filtered_indices = [
                 i for i, m in enumerate(docs)
                 if not search_term or search_term.lower() in m.get('title', '').lower()
             ]
+            total_filtered = len(filtered_indices)
 
-            for idx in filtered_docs:
-                meta = docs[idx]
+            # Pagination controls
+            total_pages = max(1, (total_filtered + SIDEBAR_PAGE_SIZE - 1) // SIDEBAR_PAGE_SIZE)
+            current_page = min(st.session_state[page_key], total_pages - 1)
+            st.session_state[page_key] = current_page
+
+            page_start = current_page * SIDEBAR_PAGE_SIZE
+            page_end   = min(page_start + SIDEBAR_PAGE_SIZE, total_filtered)
+            page_slice = filtered_indices[page_start:page_end]
+
+            if total_filtered > SIDEBAR_PAGE_SIZE:
+                st.caption(f"Showing {page_start + 1}–{page_end} of {total_filtered}")
+                nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
+                with nav_col1:
+                    if st.button("Prev", key=f"prev_{collection_key}",
+                                 disabled=current_page == 0, use_container_width=True):
+                        st.session_state[page_key] -= 1
+                        st.rerun()
+                with nav_col2:
+                    st.caption(f"Page {current_page + 1} / {total_pages}")
+                with nav_col3:
+                    if st.button("Next", key=f"next_{collection_key}",
+                                 disabled=current_page >= total_pages - 1, use_container_width=True):
+                        st.session_state[page_key] += 1
+                        st.rerun()
+
+            # Render ONLY the current page slice — typically 10 popovers max
+            for idx in page_slice:
+                meta       = docs[idx]
+                zotero_id  = doc_ids[idx]
                 title_short = meta.get('title', 'Untitled')[:50]
+
                 with st.popover(title_short, use_container_width=True):
                     full_title = meta.get('title', 'Untitled')
-                    zotero_id = st.session_state[f"{prefix}_doc_ids"][idx]
                     st.write(f"**{full_title}**")
                     st.caption(f"ID: {zotero_id}")
 
-                    new_title = st.text_input("New title", value=full_title, key=f"rename_in_{collection_key}_{idx}")
+                    new_title = st.text_input(
+                        "New title", value=full_title,
+                        key=f"rename_in_{collection_key}_{idx}"
+                    )
                     if st.button("Rename", key=f"rename_btn_{collection_key}_{idx}"):
                         success, msg = rename_article(zotero_id, new_title, collection_key)
                         if success:
@@ -250,27 +327,29 @@ with st.sidebar:
                 if st.button("Clear All", key=f"clear_all_{collection_key}", use_container_width=True):
                     clear_all_articles(collection_key)
                     st.session_state[f"{prefix}_documents"] = []
-                    st.session_state[f"{prefix}_doc_ids"] = []
+                    st.session_state[f"{prefix}_doc_ids"]   = []
                     st.session_state[f"{prefix}_doc_metadata"] = []
+                    st.session_state[page_key] = 0
                     invalidate_index(collection_key)
                     st.success("All documents cleared")
                     st.rerun()
             with col_b:
                 if st.button("Export JSON", key=f"export_{collection_key}", use_container_width=True):
                     export_data = {
-                        "count": len(st.session_state.get(f"{prefix}_documents", [])),
+                        "count": doc_count,
                         "documents": [
                             {
-                                "zotero_id": st.session_state[f"{prefix}_doc_ids"][i],
-                                "title": st.session_state[f"{prefix}_doc_metadata"][i].get('title')
+                                "zotero_id": doc_ids[i],
+                                "title": docs[i].get('title')
                             }
-                            for i in range(len(st.session_state.get(f"{prefix}_documents", [])))
+                            for i in range(doc_count)
                         ]
                     }
                     st.download_button(
                         "Download", json.dumps(export_data, indent=2),
                         f"{collection_key}_documents.json", "application/json"
                     )
+
 
 # ==================== MAIN TABS ====================
 tabs = st.tabs([col["name"] for col in COLLECTIONS])
@@ -298,10 +377,10 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
 
                             new_count = 0
                             for item in items:
-                                item_type = item['data']['itemType']
-                                title = item['data'].get('title', 'Untitled')
+                                item_type    = item['data']['itemType']
+                                title        = item['data'].get('title', 'Untitled')
                                 low_relevance = is_item_low_relevance(item)
-                                zotero_id = item['key']
+                                zotero_id    = item['key']
 
                                 if article_exists(zotero_id, None, collection_key):
                                     continue
@@ -311,31 +390,32 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                 text = f"{title}\n{item['data'].get('abstractNote', '')}"
 
                                 if item_type == 'attachment' and item['data'].get('contentType') == 'application/pdf':
-                                    file_url = f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{zotero_id}/file?key={zotero_api_key}"
+                                    file_url = (
+                                        f"https://api.zotero.org/{zotero_library_type}s/"
+                                        f"{zotero_library_id}/items/{zotero_id}/file?key={zotero_api_key}"
+                                    )
                                     try:
                                         resp = requests.get(file_url, timeout=15)
                                         if resp.status_code == 200:
-                                            pdf_text = extract_pdf_text(resp.content)
-                                            text = f"{title}\n{pdf_text}"
+                                            text = f"{title}\n{extract_pdf_text(resp.content)}"
                                     except Exception:
                                         pass
 
-                                success, msg = add_article(
+                                success, _ = add_article(
                                     zotero_id, text, title, item_type,
-                                    item['data'].get('abstractNote', ''), collection_key, low_relevance
+                                    item['data'].get('abstractNote', ''),
+                                    collection_key, low_relevance
                                 )
                                 if success:
                                     new_count += 1
 
                             documents, doc_ids, doc_metadata = get_all_articles(collection_key)
-                            st.session_state[f"{prefix}_documents"] = documents
-                            st.session_state[f"{prefix}_doc_ids"] = doc_ids
+                            st.session_state[f"{prefix}_documents"]    = documents
+                            st.session_state[f"{prefix}_doc_ids"]      = doc_ids
                             st.session_state[f"{prefix}_doc_metadata"] = doc_metadata
 
                             invalidate_index(collection_key)
 
-                            # Rebuild and persist the index now, inside the spinner,
-                            # so the rerun that follows finds it ready on disk.
                             with st.spinner("Building search index..."):
                                 _build_index_for_collection(collection_key)
                             st.session_state["_indexes_bootstrapped"] = True
@@ -357,7 +437,10 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        if prompt := st.chat_input(f"Ask anything about {col_info['name']}...", key=f"chat_input_{collection_key}"):
+        if prompt := st.chat_input(
+            f"Ask anything about {col_info['name']}...",
+            key=f"chat_input_{collection_key}"
+        ):
             st.session_state[f"{prefix}_messages"].append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
@@ -374,7 +457,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                     st.markdown(result)
 
                 elif not client:
-                    result = "OpenAI API key not configured."
+                    result = "Groq API key not configured. Add groq_api_key to your secrets."
                     st.markdown(result)
 
                 else:
@@ -389,21 +472,34 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         similarity_threshold=0.12
                     )
 
-                    context, cited_docs = format_context_from_chunks(
+                    # Cap context to MAX_CONTEXT_CHARS per chunk before sending
+                    context, cited_docs = build_capped_context(
                         relevant_chunks, seen_docs,
                         st.session_state.get('use_summaries', True)
                     )
 
                     stream = client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model="llama-3.3-70b-versatile",
                         messages=[
-                            {"role": "system", "content": f"You are a helpful assistant knowledgeable about {col_info['name']}."},
-                            {"role": "user", "content": f"Context from documents:\n{context}\n\nQuery: {prompt}"}
+                            {
+                                "role": "system",
+                                "content": (
+                                    f"You are a concise assistant for {col_info['name']}. "
+                                    "Answer in 2-4 sentences unless the question genuinely requires more. "
+                                    "Base your answer only on the provided context. "
+                                    "If the context does not contain enough information, say so briefly."
+                                )
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Context from documents:\n{context}\n\nQuestion: {prompt}"
+                            }
                         ],
-                        stream=True
+                        stream=True,
+                        max_tokens=1024,
                     )
 
-                    # Tokens appear as they arrive — no waiting for the full response
+                    # Tokens appear in the UI as they arrive
                     result = st.write_stream(
                         chunk.choices[0].delta.content or "" for chunk in stream
                     )
@@ -417,7 +513,9 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
 
                 st.session_state.query_cache[cache_key] = result
 
-            st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": result or ""})
+            st.session_state[f"{prefix}_messages"].append(
+                {"role": "assistant", "content": result or ""}
+            )
 
 with bottom():
     st.caption("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection")
