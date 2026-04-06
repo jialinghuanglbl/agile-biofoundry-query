@@ -7,6 +7,7 @@ import PyPDF2
 import requests
 import io
 import json
+import hashlib
 from streamlit_extras.bottom_container import bottom
 
 try:
@@ -449,6 +450,11 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
             cache_key = f"{collection_key}:{prompt.lower().strip()}"
 
             with st.chat_message("assistant"):
+                history = st.session_state[f"{prefix}_messages"]
+                history_text = "\n".join(f"{msg['role']}:{msg['content']}" for msg in history)
+                history_hash = hashlib.sha256(history_text.encode('utf-8')).hexdigest()
+                cache_key = f"{collection_key}:{history_hash}"
+
                 if cache_key in st.session_state.query_cache:
                     result = st.session_state.query_cache[cache_key]
                     st.markdown(result)
@@ -479,24 +485,29 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         st.session_state.get('use_summaries', True)
                     )
 
+                    previous_history = history[:-1]
+                    latest_prompt = history[-1]['content'] if history else prompt
+
+                    conversation = [
+                        {
+                            "role": "system",
+                            "content": (
+                                f"You are a helpful assistant for {col_info['name']}. "
+                                "Answer in 2-4 sentences unless the question genuinely requires more. "
+                                "Base your answer only on the provided context. "
+                                "If the context does not contain enough information, say so briefly."
+                            )
+                        }
+                    ]
+                    conversation.extend(previous_history)
+                    conversation.append({
+                        "role": "user",
+                        "content": f"Context from documents:\n{context}\n\nQuestion: {latest_prompt}"
+                    })
+
                     stream = client.chat.completions.create(
-                        #model="llama-3.3-70b-versatile",
                         model="llama-3.3-70b-versatile",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    f"You are a helpful assistant for {col_info['name']}. "
-                                    "Answer in 2-4 sentences unless the question genuinely requires more. "
-                                    "Base your answer only on the provided context. "
-                                    "If the context does not contain enough information, say so briefly."
-                                )
-                            },
-                            {
-                                "role": "user",
-                                "content": f"Context from documents:\n{context}\n\nQuestion: {prompt}"
-                            }
-                        ],
+                        messages=conversation,
                         stream=True,
                         max_tokens=1024,
                     )
