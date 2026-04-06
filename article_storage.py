@@ -1,6 +1,5 @@
 """
 Article Storage Module
-Handles persistent storage of Zotero articles and prevents duplicates
 Supports multiple collections with separate storage files
 
 Articles are stored locally in ./zotero_data/

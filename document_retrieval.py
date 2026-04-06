@@ -1,5 +1,5 @@
 """
-Document Retrieval Module – OPTIMIZED FOR LONG TRANSCRIPTS & ACADEMIC PAPERS
+Document Retrieval Module
 """
 
 import re
@@ -10,7 +10,6 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Safe FAISS import
 try:
     import faiss
     FAISS_AVAILABLE = True
@@ -57,7 +56,7 @@ def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int
     chunks_path = os.path.join(cache_dir, "chunks.joblib")
     if not os.path.exists(chunks_path):
         return None
-    
+
     try:
         chunks = joblib.load(chunks_path)
         doc_id_mapping = joblib.load(os.path.join(cache_dir, "doc_id_mapping.joblib"))
@@ -112,7 +111,6 @@ def is_transcript_doc(document: str, metadata: Dict) -> bool:
     if len(lines) >= 10 and sum(len(ln) for ln in lines) / len(lines) < 100:
         return True
 
-    # Force fine chunking for very long content
     if len(document) > 30000 or len(lines) > 400:
         return True
     return False
@@ -130,17 +128,21 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
     return chunks
 
 
-def summarize_chunk(text: str, max_sentences: int = 1) -> str:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    import numpy as np
-
+def summarize_chunk(text: str, max_sentences: int = 1, _vectorizer: TfidfVectorizer = None) -> str:
+    """
+    Summarize a chunk to its most informative sentence.
+    Accepts an optional pre-fitted vectorizer to avoid re-fitting per chunk.
+    """
     sentences = re.split(r'(?<=[.!?])\s+', text)
     if len(sentences) <= max_sentences:
         return text.strip()
 
     try:
-        vec = TfidfVectorizer(stop_words='english', max_features=1000)
-        X = vec.fit_transform(sentences)
+        if _vectorizer is not None:
+            X = _vectorizer.transform(sentences)
+        else:
+            vec = TfidfVectorizer(stop_words='english', max_features=1000)
+            X = vec.fit_transform(sentences)
         scores = X.sum(axis=1).A1
         top_idx = np.argsort(scores)[-max_sentences:]
         return " ".join(sentences[i].strip() for i in sorted(top_idx))
@@ -156,8 +158,14 @@ def create_chunked_documents(
     overlap: int = 80,
     summary_sentences: int = 1
 ) -> Tuple[List[Dict], List[int]]:
-    chunks_with_metadata = []
-    doc_id_mapping = []
+    """
+    Chunk all documents and compute per-chunk summaries.
+    Uses a single shared TF-IDF vectorizer fitted on all chunk texts
+    to avoid the cost of re-fitting a vectorizer for every individual chunk.
+    """
+    # First pass: collect all raw chunks
+    raw_chunks = []
+    raw_doc_id_mapping = []
 
     for doc_idx, (document, doc_id, metadata) in enumerate(zip(documents, doc_ids, doc_metadata)):
         if is_transcript_doc(document, metadata):
@@ -168,21 +176,55 @@ def create_chunked_documents(
             use_summary_sentences = summary_sentences
 
         for chunk in chunks:
-            summary = summarize_chunk(chunk['text'], use_summary_sentences)
-            chunk_data = {
+            raw_chunks.append({
                 'text': chunk['text'],
-                'summary': summary,
                 'doc_id': doc_id,
                 'doc_title': metadata.get('title', 'Untitled'),
                 'doc_type': metadata.get('itemType', 'Unknown'),
                 'doc_abstract': metadata.get('abstract', ''),
                 'low_relevance': metadata.get('low_relevance', False),
-                'chunk_position': len([c for c in chunks_with_metadata if c.get('doc_id') == doc_id])
-            }
-            chunks_with_metadata.append(chunk_data)
-            doc_id_mapping.append(doc_idx)
+                'use_summary_sentences': use_summary_sentences,
+            })
+            raw_doc_id_mapping.append(doc_idx)
 
-    return chunks_with_metadata, doc_id_mapping
+    if not raw_chunks:
+        return [], []
+
+    # Fit a single vectorizer across all chunk texts for summarization
+    all_texts = [c['text'] for c in raw_chunks]
+    try:
+        shared_vec = TfidfVectorizer(stop_words='english', max_features=1000)
+        shared_vec.fit(all_texts)
+    except Exception:
+        shared_vec = None
+
+    # Second pass: compute summaries using the shared vectorizer
+    chunks_with_metadata = []
+    doc_chunk_counts: Dict[str, int] = {}
+
+    for chunk_data in raw_chunks:
+        doc_id = chunk_data['doc_id']
+        doc_chunk_counts[doc_id] = doc_chunk_counts.get(doc_id, 0)
+
+        summary = summarize_chunk(
+            chunk_data['text'],
+            chunk_data['use_summary_sentences'],
+            _vectorizer=shared_vec
+        )
+
+        chunks_with_metadata.append({
+            'text': chunk_data['text'],
+            'summary': summary,
+            'doc_id': doc_id,
+            'doc_title': chunk_data['doc_title'],
+            'doc_type': chunk_data['doc_type'],
+            'doc_abstract': chunk_data['doc_abstract'],
+            'low_relevance': chunk_data['low_relevance'],
+            'chunk_position': doc_chunk_counts[doc_id],
+        })
+        doc_chunk_counts[doc_id] += 1
+
+    return chunks_with_metadata, raw_doc_id_mapping
 
 
 def retrieve_relevant_chunks(
