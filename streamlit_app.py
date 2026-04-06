@@ -71,32 +71,48 @@ def is_item_low_relevance(item: dict) -> bool:
     return False
 
 
-# ==================== CACHED INDEX BUILDER ====================
-# st.cache_resource keeps this in memory for the entire server session.
-# The index is only rebuilt when documents actually change (cache is cleared on
-# add/delete/rename), not on every Streamlit script re-run.
-@st.cache_resource
-def build_chunk_index(collection_key: str, _cache_buster: int = 0):
+# ==================== INDEX MANAGEMENT ====================
+# Indexes live entirely in st.session_state. They are loaded from disk once
+# per session via _bootstrap_indexes() which runs before any UI is drawn.
+# No index work happens during the tab render loop, so the UI never grays out
+# waiting for index operations.
+
+def _build_index_for_collection(collection_key: str) -> bool:
     """
-    Load the chunk index from disk, or build and persist a new one.
-    _cache_buster is incremented whenever documents change, forcing a rebuild.
-    It is prefixed with _ so Streamlit does not hash its value.
+    Load the FAISS index from disk into session_state, or build and persist
+    a new one if no disk cache exists. Returns True if an index is available.
     """
+    prefix = f"col_{collection_key}"
+
+    if f"{prefix}_documents" not in st.session_state:
+        documents, doc_ids, doc_metadata = get_all_articles(collection_key)
+        st.session_state[f"{prefix}_documents"] = documents
+        st.session_state[f"{prefix}_doc_ids"] = doc_ids
+        st.session_state[f"{prefix}_doc_metadata"] = doc_metadata
+
+    # Fast path: load from disk cache
     loaded = load_chunk_index(collection_key)
     if loaded:
-        return loaded
+        chunks, doc_id_mapping, vectorizer, faiss_index = loaded
+        st.session_state[f"{prefix}_chunks"] = chunks
+        st.session_state[f"{prefix}_doc_id_mapping"] = doc_id_mapping
+        st.session_state[f"{prefix}_chunk_vectorizer"] = vectorizer
+        st.session_state[f"{prefix}_faiss_index"] = faiss_index
+        return True
 
-    documents, doc_ids, doc_metadata = get_all_articles(collection_key)
+    # Slow path: build fresh
+    documents = st.session_state.get(f"{prefix}_documents", [])
     if not documents:
-        return None
+        return False
 
     chunks, doc_id_mapping = create_chunked_documents(
-        documents, doc_ids, doc_metadata,
+        documents,
+        st.session_state[f"{prefix}_doc_ids"],
+        st.session_state[f"{prefix}_doc_metadata"],
         chunk_size=500, overlap=80, summary_sentences=1
     )
-
     if not chunks:
-        return None
+        return False
 
     chunk_texts = [c.get('summary', c['text']) for c in chunks]
     vectorizer = TfidfVectorizer(stop_words='english')
@@ -110,37 +126,56 @@ def build_chunk_index(collection_key: str, _cache_buster: int = 0):
     else:
         faiss_index = None
 
+    st.session_state[f"{prefix}_chunks"] = chunks
+    st.session_state[f"{prefix}_doc_id_mapping"] = doc_id_mapping
+    st.session_state[f"{prefix}_chunk_vectorizer"] = vectorizer
+    st.session_state[f"{prefix}_faiss_index"] = faiss_index
+
     save_chunk_index(chunks, doc_id_mapping, vectorizer, faiss_index, collection_key)
-    return chunks, doc_id_mapping, vectorizer, faiss_index
+    return True
+
+
+def _bootstrap_indexes():
+    """
+    Load all indexes from disk into session_state on first page load.
+    Skipped on all subsequent reruns because the flag is already set.
+    Disk reads are fast (joblib + faiss binary), so this does not block the UI.
+    """
+    if st.session_state.get("_indexes_bootstrapped"):
+        return
+    for col_info in COLLECTIONS:
+        _build_index_for_collection(col_info["collection_key"])
+    st.session_state["_indexes_bootstrapped"] = True
 
 
 def invalidate_index(collection_key: str):
     """
-    Clear the disk cache and increment the cache buster so
-    build_chunk_index() is called fresh on the next query.
+    Drop the in-memory index for one collection and clear its disk cache.
+    Called after any document change (add, delete, rename, clear).
     """
-    clear_chunk_cache(collection_key)
-    key = f"cache_buster_{collection_key}"
-    st.session_state[key] = st.session_state.get(key, 0) + 1
-    build_chunk_index.clear()
-
-
-def get_index(collection_key: str):
-    buster = st.session_state.get(f"cache_buster_{collection_key}", 0)
-    return build_chunk_index(collection_key, _cache_buster=buster)
-
-
-def init_session_state_for_collection(collection_key: str):
     prefix = f"col_{collection_key}"
-    if f"{prefix}_documents" not in st.session_state:
-        documents, doc_ids, doc_metadata = get_all_articles(collection_key)
-        st.session_state[f"{prefix}_documents"] = documents
-        st.session_state[f"{prefix}_doc_ids"] = doc_ids
-        st.session_state[f"{prefix}_doc_metadata"] = doc_metadata
+    for key in ["_chunks", "_doc_id_mapping", "_chunk_vectorizer", "_faiss_index"]:
+        st.session_state.pop(f"{prefix}{key}", None)
+    clear_chunk_cache(collection_key)
+    st.session_state.pop("_indexes_bootstrapped", None)
 
 
-# ==================== MAIN APP ====================
+def index_ready(collection_key: str) -> bool:
+    prefix = f"col_{collection_key}"
+    return (
+        f"{prefix}_chunks" in st.session_state
+        and f"{prefix}_chunk_vectorizer" in st.session_state
+        and st.session_state.get(f"{prefix}_faiss_index") is not None
+    )
+
+
+# ==================== APP SETUP ====================
 st.set_page_config(page_title="Agile Biofoundry & ABPDU Query Tool", layout="wide")
+
+# Run before any UI. On the very first load this reads .joblib files from disk
+# (fast). On every subsequent rerun the flag is already set and this is a no-op.
+_bootstrap_indexes()
+
 st.title("Agile Biofoundry & ABPDU Query Tool")
 
 zotero_library_id = _safe_secret("zotero_library_id")
@@ -157,9 +192,6 @@ if 'k_chunks' not in st.session_state:
 if 'query_cache' not in st.session_state:
     st.session_state.query_cache = {}
 
-for col_info in COLLECTIONS:
-    init_session_state_for_collection(col_info['collection_key'])
-
 # ==================== SIDEBAR ====================
 with st.sidebar:
     st.header("Collections & Documents")
@@ -171,10 +203,17 @@ with st.sidebar:
         with st.expander(f"{collection_name}", expanded=False):
             st.metric("Documents", len(st.session_state.get(f"{prefix}_documents", [])))
 
-            search_term = st.text_input(f"Search {collection_name}", key=f"search_{collection_key}", placeholder="Search documents...")
+            search_term = st.text_input(
+                f"Search {collection_name}",
+                key=f"search_{collection_key}",
+                placeholder="Search documents..."
+            )
 
             docs = st.session_state.get(f"{prefix}_doc_metadata", [])
-            filtered_docs = [i for i, m in enumerate(docs) if not search_term or search_term.lower() in m.get('title', '').lower()]
+            filtered_docs = [
+                i for i, m in enumerate(docs)
+                if not search_term or search_term.lower() in m.get('title', '').lower()
+            ]
 
             for idx in filtered_docs:
                 meta = docs[idx]
@@ -221,13 +260,17 @@ with st.sidebar:
                     export_data = {
                         "count": len(st.session_state.get(f"{prefix}_documents", [])),
                         "documents": [
-                            {"zotero_id": st.session_state[f"{prefix}_doc_ids"][i],
-                             "title": st.session_state[f"{prefix}_doc_metadata"][i].get('title')}
+                            {
+                                "zotero_id": st.session_state[f"{prefix}_doc_ids"][i],
+                                "title": st.session_state[f"{prefix}_doc_metadata"][i].get('title')
+                            }
                             for i in range(len(st.session_state.get(f"{prefix}_documents", [])))
                         ]
                     }
-                    st.download_button("Download", json.dumps(export_data, indent=2),
-                                       f"{collection_key}_documents.json", "application/json")
+                    st.download_button(
+                        "Download", json.dumps(export_data, indent=2),
+                        f"{collection_key}_documents.json", "application/json"
+                    )
 
 # ==================== MAIN TABS ====================
 tabs = st.tabs([col["name"] for col in COLLECTIONS])
@@ -277,8 +320,10 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                     except Exception:
                                         pass
 
-                                success, msg = add_article(zotero_id, text, title, item_type,
-                                                           item['data'].get('abstractNote', ''), collection_key, low_relevance)
+                                success, msg = add_article(
+                                    zotero_id, text, title, item_type,
+                                    item['data'].get('abstractNote', ''), collection_key, low_relevance
+                                )
                                 if success:
                                     new_count += 1
 
@@ -288,6 +333,12 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                             st.session_state[f"{prefix}_doc_metadata"] = doc_metadata
 
                             invalidate_index(collection_key)
+
+                            # Rebuild and persist the index now, inside the spinner,
+                            # so the rerun that follows finds it ready on disk.
+                            with st.spinner("Building search index..."):
+                                _build_index_for_collection(collection_key)
+                            st.session_state["_indexes_bootstrapped"] = True
 
                             st.success(f"Loaded {new_count} new documents. Total: {len(documents)}")
                             st.rerun()
@@ -302,14 +353,11 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
         if f"{prefix}_messages" not in st.session_state:
             st.session_state[f"{prefix}_messages"] = []
 
-        # Render existing messages
         for message in st.session_state[f"{prefix}_messages"]:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        # Chat input — streaming response written directly, no second rerun needed
         if prompt := st.chat_input(f"Ask anything about {col_info['name']}...", key=f"chat_input_{collection_key}"):
-            # Show the user message immediately
             st.session_state[f"{prefix}_messages"].append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
@@ -318,58 +366,56 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
 
             with st.chat_message("assistant"):
                 if cache_key in st.session_state.query_cache:
-                    # Cached answer — display instantly
                     result = st.session_state.query_cache[cache_key]
                     st.markdown(result)
+
+                elif not index_ready(collection_key):
+                    result = "No documents loaded yet. Please load from Zotero first."
+                    st.markdown(result)
+
+                elif not client:
+                    result = "OpenAI API key not configured."
+                    st.markdown(result)
+
                 else:
-                    index_data = get_index(collection_key)
+                    # FAISS search — milliseconds
+                    relevant_chunks, seen_docs = retrieve_relevant_chunks(
+                        prompt,
+                        st.session_state[f"{prefix}_chunk_vectorizer"],
+                        st.session_state[f"{prefix}_chunks"],
+                        st.session_state[f"{prefix}_doc_id_mapping"],
+                        faiss_index=st.session_state[f"{prefix}_faiss_index"],
+                        k=st.session_state.get('k_chunks', 3),
+                        similarity_threshold=0.12
+                    )
 
-                    if index_data is None:
-                        result = "No documents loaded yet. Please load from Zotero first."
-                        st.markdown(result)
-                    elif not client:
-                        result = "OpenAI API key not configured."
-                        st.markdown(result)
-                    else:
-                        chunks, doc_id_mapping, vectorizer, faiss_index = index_data
+                    context, cited_docs = format_context_from_chunks(
+                        relevant_chunks, seen_docs,
+                        st.session_state.get('use_summaries', True)
+                    )
 
-                        relevant_chunks, seen_docs = retrieve_relevant_chunks(
-                            prompt,
-                            vectorizer,
-                            chunks,
-                            doc_id_mapping,
-                            faiss_index=faiss_index,
-                            k=st.session_state.get('k_chunks', 3),
-                            similarity_threshold=0.12
-                        )
+                    stream = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": f"You are a helpful assistant knowledgeable about {col_info['name']}."},
+                            {"role": "user", "content": f"Context from documents:\n{context}\n\nQuery: {prompt}"}
+                        ],
+                        stream=True
+                    )
 
-                        context, cited_docs = format_context_from_chunks(
-                            relevant_chunks, seen_docs,
-                            st.session_state.get('use_summaries', True)
-                        )
+                    # Tokens appear as they arrive — no waiting for the full response
+                    result = st.write_stream(
+                        chunk.choices[0].delta.content or "" for chunk in stream
+                    )
 
-                        stream = client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[
-                                {"role": "system", "content": f"You are a helpful assistant knowledgeable about {col_info['name']}."},
-                                {"role": "user", "content": f"Context from documents:\n{context}\n\nQuery: {prompt}"}
-                            ],
-                            stream=True
-                        )
+                    if cited_docs:
+                        sources = "\n\n---\n**Sources:**\n"
+                        for doc in cited_docs:
+                            sources += f"- {doc['title']} (Relevance: {doc['similarity']:.1%})\n"
+                        st.markdown(sources)
+                        result = (result or "") + sources
 
-                        # Stream tokens directly to the UI — user sees words appearing immediately
-                        result = st.write_stream(
-                            chunk.choices[0].delta.content or "" for chunk in stream
-                        )
-
-                        if cited_docs:
-                            sources = "\n\n---\n**Sources:**\n"
-                            for doc in cited_docs:
-                                sources += f"- {doc['title']} (Relevance: {doc['similarity']:.1%})\n"
-                            st.markdown(sources)
-                            result = (result or "") + sources
-
-                    st.session_state.query_cache[cache_key] = result
+                st.session_state.query_cache[cache_key] = result
 
             st.session_state[f"{prefix}_messages"].append({"role": "assistant", "content": result or ""})
 
