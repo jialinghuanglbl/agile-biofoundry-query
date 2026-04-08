@@ -214,9 +214,9 @@ st.title("Agile Biofoundry & ABPDU Query Tool")
 zotero_library_id = _safe_secret("zotero_library_id")
 zotero_api_key    = _safe_secret("zotero_api_key")
 zotero_library_type = _safe_secret("zotero_library_type", "user")
-groq_api_key      = _safe_secret("groq_api_key")
+openai_api_key = _safe_secret("openai_api_key")
 
-client = Groq(api_key=groq_api_key) if groq_api_key else None
+client = OpenAI(api_key=openai_api_key) if openai_api_key else None
 
 if 'use_summaries' not in st.session_state:
     st.session_state.use_summaries = True
@@ -505,7 +505,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                     })
 
                     stream = client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
+                        model="gpt-4o-mini",
                         messages=conversation,
                         stream=True,
                         max_tokens=1024,
