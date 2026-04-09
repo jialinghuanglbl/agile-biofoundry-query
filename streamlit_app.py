@@ -464,7 +464,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                     st.markdown(result)
 
                 elif not client:
-                    result = "Groq API key not configured. Add groq_api_key to your secrets."
+                    result = "OpenAI API key not configured."
                     st.markdown(result)
 
                 else:
@@ -492,8 +492,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         {
                             "role": "system",
                             "content": (
-                                f"You are a helpful assistant for {col_info['name']}. "
-                                "Answer in 3-6 sentences unless the question genuinely requires more. "
+                                f"You are a helpful assistant."
                                 "Base your answer only on the provided context. "
                             )
                         }
