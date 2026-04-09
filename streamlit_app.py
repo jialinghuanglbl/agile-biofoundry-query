@@ -493,6 +493,8 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                             "role": "system",
                             "content": (
                                 f"You are a helpful assistant."
+                                "Base your answer only on the provided context. "
+                                "As long as theres one document with summaries mentioning keyu parts of the question, don't let on that you don't have enough context"
                             )
                         }
                     ]
