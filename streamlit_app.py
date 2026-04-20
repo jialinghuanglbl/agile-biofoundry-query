@@ -77,6 +77,20 @@ def is_item_low_relevance(item: dict) -> bool:
     return False
 
 
+def get_item_url(item: dict) -> str:
+    data = item.get('data', {})
+    url = data.get('url', '') or data.get('uri', '')
+    if url:
+        return url
+    links = item.get('links', {}) or {}
+    alternate = links.get('alternate', {})
+    if isinstance(alternate, dict):
+        href = alternate.get('href', '')
+        if href:
+            return href
+    return ''
+
+
 # ==================== INDEX MANAGEMENT ====================
 def _build_index_for_collection(collection_key: str) -> bool:
     prefix = f"col_{collection_key}"
@@ -382,6 +396,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                 item_type    = item['data']['itemType']
                                 title        = item['data'].get('title', 'Untitled')
                                 low_relevance = is_item_low_relevance(item)
+                                item_url      = get_item_url(item)
                                 zotero_id    = item['key']
 
                                 if article_exists(zotero_id, None, collection_key):
@@ -406,7 +421,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                 success, _ = add_article(
                                     zotero_id, text, title, item_type,
                                     item['data'].get('abstractNote', ''),
-                                    collection_key, low_relevance
+                                    collection_key, low_relevance, item_url
                                 )
                                 if success:
                                     new_count += 1
@@ -520,7 +535,12 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                     if cited_docs:
                         sources = "\n\n---\n**Sources:**\n"
                         for doc in cited_docs:
-                            sources += f"- {doc['title']} (Relevance: {doc['similarity']:.1%})\n"
+                            title = doc['title']
+                            url = doc.get('url', '')
+                            if url:
+                                sources += f"- [{title}]({url}) (Relevance: {doc['similarity']:.1%})\n"
+                            else:
+                                sources += f"- {title} (Relevance: {doc['similarity']:.1%})\n"
                         st.markdown(sources)
                         result = (result or "") + sources
 
