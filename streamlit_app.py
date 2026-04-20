@@ -206,6 +206,7 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
         entry = {
             'title': info['title'],
             'id': doc_id,
+            'url': info.get('url', ''),
             'similarity': info['max_similarity'],
             'chunk_count': info['chunk_count']
         }
