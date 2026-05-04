@@ -183,7 +183,6 @@ def create_chunked_documents(
                 'doc_type': metadata.get('itemType', 'Unknown'),
                 'doc_abstract': metadata.get('abstract', ''),
                 'doc_url': metadata.get('url', ''),
-                'doc_image_urls': metadata.get('image_urls', []),
                 'low_relevance': metadata.get('low_relevance', False),
                 'use_summary_sentences': use_summary_sentences,
             })
@@ -292,7 +291,6 @@ def retrieve_relevant_chunks(
                 'title': chunk['doc_title'],
                 'type': chunk['doc_type'],
                 'url': chunk.get('doc_url', ''),
-                'image_urls': chunk.get('doc_image_urls', []),
                 'max_similarity': chunk['similarity'],
                 'chunk_count': 0,
                 'pages': set(),
@@ -349,7 +347,6 @@ def format_context_from_chunks(
             'title': info['title'],
             'id': doc_id,
             'url': info.get('url', ''),
-            'image_urls': info.get('image_urls', []),
             'similarity': info['max_similarity'],
             'chunk_count': info['chunk_count']
         }

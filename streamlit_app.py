@@ -207,7 +207,6 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
             'title': info['title'],
             'id': doc_id,
             'url': info.get('url', ''),
-            'image_urls': info.get('image_urls', []),
             'similarity': info['max_similarity'],
             'chunk_count': info['chunk_count']
         }
@@ -407,33 +406,6 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                     continue
 
                                 text = f"{title}\n{item['data'].get('abstractNote', '')}"
-                                image_urls = []
-
-                                if item_type != 'attachment':
-                                    try:
-                                        children = zot.children(zotero_id)
-                                        for child in children:
-                                            if child['data'].get('itemType') == 'attachment' and child['data'].get('contentType', '').startswith('image/'):
-                                                child_file_url = (
-                                                    f"https://api.zotero.org/{zotero_library_type}s/"
-                                                    f"{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
-                                                )
-                                                image_urls.append(child_file_url)
-                                            elif child['data'].get('itemType') == 'attachment' and child['data'].get('contentType') == 'application/pdf':
-                                                child_file_url = (
-                                                    f"https://api.zotero.org/{zotero_library_type}s/"
-                                                    f"{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
-                                                )
-                                                try:
-                                                    resp = requests.get(child_file_url, timeout=15)
-                                                    if resp.status_code == 200:
-                                                        pdf_text = extract_pdf_text(resp.content)
-                                                        text = f"{title}\n{pdf_text}"
-                                                        break
-                                                except Exception:
-                                                    pass
-                                    except Exception:
-                                        pass
 
                                 if item_type == 'attachment' and item['data'].get('contentType') == 'application/pdf':
                                     file_url = (
@@ -446,18 +418,11 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                             text = f"{title}\n{extract_pdf_text(resp.content)}"
                                     except Exception:
                                         pass
-                                elif item_type == 'attachment' and item['data'].get('contentType', '').startswith('image/'):
-                                    file_url = (
-                                        f"https://api.zotero.org/{zotero_library_type}s/"
-                                        f"{zotero_library_id}/items/{zotero_id}/file?key={zotero_api_key}"
-                                    )
-                                    image_urls.append(file_url)
-                                    continue  # Don't add image attachments as separate articles
 
                                 success, _ = add_article(
                                     zotero_id, text, title, item_type,
                                     item['data'].get('abstractNote', ''),
-                                    collection_key, low_relevance, item_url, image_urls=image_urls
+                                    collection_key, low_relevance, item_url
                                 )
                                 if success:
                                     new_count += 1
@@ -579,16 +544,6 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                 sources += f"- {title} (Relevance: {doc['similarity']:.1%})\n"
                         st.markdown(sources)
                         result = (result or "") + sources
-
-                        # Display images from top sources
-                        for doc in cited_docs[:3]:  # Top 3 sources
-                            if doc.get('image_urls'):
-                                st.subheader(f"Images from {doc['title']}")
-                                for img_url in doc['image_urls']:
-                                    try:
-                                        st.image(img_url, caption=f"From {doc['title']}")
-                                    except Exception as e:
-                                        st.caption(f"Could not load image: {e}")
 
                 st.session_state.query_cache[cache_key] = result
 
