@@ -419,6 +419,19 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                                     f"{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
                                                 )
                                                 image_urls.append(child_file_url)
+                                            elif child['data'].get('itemType') == 'attachment' and child['data'].get('contentType') == 'application/pdf':
+                                                child_file_url = (
+                                                    f"https://api.zotero.org/{zotero_library_type}s/"
+                                                    f"{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
+                                                )
+                                                try:
+                                                    resp = requests.get(child_file_url, timeout=15)
+                                                    if resp.status_code == 200:
+                                                        pdf_text = extract_pdf_text(resp.content)
+                                                        text = f"{title}\n{pdf_text}"
+                                                        break
+                                                except Exception:
+                                                    pass
                                     except Exception:
                                         pass
 
@@ -439,11 +452,12 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                         f"{zotero_library_id}/items/{zotero_id}/file?key={zotero_api_key}"
                                     )
                                     image_urls.append(file_url)
+                                    continue  # Don't add image attachments as separate articles
 
                                 success, _ = add_article(
                                     zotero_id, text, title, item_type,
                                     item['data'].get('abstractNote', ''),
-                                    collection_key, low_relevance, item_url, image_urls
+                                    collection_key, low_relevance, item_url, image_urls=image_urls
                                 )
                                 if success:
                                     new_count += 1
