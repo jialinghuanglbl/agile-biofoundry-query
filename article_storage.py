@@ -60,7 +60,8 @@ def add_article(
     abstract: str = "",
     collection_name: str = "default",
     low_relevance: bool = False,
-    url: str = ""
+    url: str = "",
+    image_urls: List[str] = None
 ) -> Tuple[bool, str]:
     """Add an article to storage if it doesn't already exist"""
     articles_data = load_articles(collection_name)
@@ -75,7 +76,8 @@ def add_article(
         "abstract": abstract[:200] if abstract else "",
         "index": len(articles_data["articles"]) - 1,
         "low_relevance": low_relevance,
-        "url": url or ""
+        "url": url or "",
+        "image_urls": image_urls or []
     }
     
     save_articles(articles_data, collection_name)
@@ -102,7 +104,8 @@ def get_all_articles(collection_name: str = "default") -> Tuple[List[str], List[
                 "itemType": meta.get("itemType", "Unknown"),
                 "abstract": meta.get("abstract", ""),
                 "low_relevance": meta.get("low_relevance", False),
-                "url": meta.get("url", "")
+                "url": meta.get("url", ""),
+                "image_urls": meta.get("image_urls", [])
             })
 
     return documents, doc_ids, doc_metadata

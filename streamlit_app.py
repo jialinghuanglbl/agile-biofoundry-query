@@ -8,6 +8,7 @@ import requests
 import io
 import json
 import hashlib
+import base64
 from streamlit_extras.bottom_container import bottom
 
 try:
@@ -16,6 +17,13 @@ try:
 except ImportError:
     faiss = None
     FAISS_AVAILABLE = False
+
+try:
+    import fitz
+    FITZ_AVAILABLE = True
+except ImportError:
+    fitz = None
+    FITZ_AVAILABLE = False
 
 from article_storage import (
     load_articles, add_article, get_all_articles, remove_article,
@@ -52,6 +60,53 @@ def extract_pdf_text(pdf_content):
         return text
     except Exception as e:
         return f"Error extracting PDF text: {str(e)}"
+
+
+def extract_pdf_images(pdf_content, max_images: int = 3):
+    """Extract embedded images from PDF using PyMuPDF (fitz)."""
+    if not FITZ_AVAILABLE:
+        return []
+    
+    try:
+        pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
+        images_data = []
+        image_count = 0
+        
+        for page_num in range(len(pdf_doc)):
+            if image_count >= max_images:
+                break
+            
+            page = pdf_doc[page_num]
+            image_list = page.get_images()
+            
+            for img_index in image_list:
+                if image_count >= max_images:
+                    break
+                    
+                xref = img_index[0]
+                pix = fitz.Pixmap(pdf_doc, xref)
+                
+                # Convert to PNG if needed
+                if pix.n - pix.alpha < 4:  # Grayscale or RGB
+                    timage = fitz.Pixmap(fitz.csRGB, pix)
+                else:
+                    timage = pix
+                
+                # Encode as base64 PNG
+                img_bytes = timage.tobytes("png")
+                b64_img = base64.b64encode(img_bytes).decode('utf-8')
+                images_data.append(f"data:image/png;base64,{b64_img}")
+                image_count += 1
+                
+                if pix != timage:
+                    timage = None
+                    
+        pdf_doc.close()
+        return images_data
+        
+    except Exception as e:
+        print(f"Error extracting images: {str(e)}")
+        return []
 
 
 def _safe_secret(name: str, default: str = "") -> str:
@@ -406,6 +461,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                     continue
 
                                 text = f"{title}\n{item['data'].get('abstractNote', '')}"
+                                image_urls = []
 
                                 if item_type == 'attachment' and item['data'].get('contentType') == 'application/pdf':
                                     file_url = (
@@ -416,13 +472,14 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                         resp = requests.get(file_url, timeout=15)
                                         if resp.status_code == 200:
                                             text = f"{title}\n{extract_pdf_text(resp.content)}"
+                                            image_urls = extract_pdf_images(resp.content, max_images=3)
                                     except Exception:
                                         pass
 
                                 success, _ = add_article(
                                     zotero_id, text, title, item_type,
                                     item['data'].get('abstractNote', ''),
-                                    collection_key, low_relevance, item_url
+                                    collection_key, low_relevance, item_url, image_urls=image_urls
                                 )
                                 if success:
                                     new_count += 1
@@ -544,6 +601,21 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                 sources += f"- {title} (Relevance: {doc['similarity']:.1%})\n"
                         st.markdown(sources)
                         result = (result or "") + sources
+
+                        # Display images from top sources
+                        for doc in cited_docs[:3]:  # Top 3 sources
+                            if doc.get('image_urls'):
+                                st.subheader(f"📊 Figures from {doc['title']}")
+                                cols = st.columns(min(3, len(doc['image_urls'])))
+                                for col, img_url in zip(cols, doc['image_urls'][:3]):
+                                    with col:
+                                        if img_url.startswith('data:image'):
+                                            st.image(img_url, use_column_width=True)
+                                        else:
+                                            try:
+                                                st.image(img_url, use_column_width=True)
+                                            except Exception:
+                                                pass
 
                 st.session_state.query_cache[cache_key] = result
 
