@@ -101,8 +101,17 @@ def extract_pdf_images(pdf_content, max_images: int = 3):
                 if pix != timage:
                     timage = None
                     
+        if images_data:
+            pdf_doc.close()
+            return images_data
+
+        # Fallback: render the first page as preview if no embedded figures were found.
+        page = pdf_doc[0]
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        img_bytes = pix.tobytes("png")
+        b64_img = base64.b64encode(img_bytes).decode('utf-8')
         pdf_doc.close()
-        return images_data
+        return [f"data:image/png;base64,{b64_img}"]
         
     except Exception as e:
         print(f"Error extracting images: {str(e)}")
@@ -471,6 +480,29 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                 text = f"{title}\n{item['data'].get('abstractNote', '')}"
                                 image_urls = []
 
+                                if item_type != 'attachment':
+                                    try:
+                                        children = zot.children(zotero_id)
+                                        for child in children:
+                                            ctype = child['data'].get('contentType', '')
+                                            if child['data'].get('itemType') == 'attachment':
+                                                child_file_url = (
+                                                    f"https://api.zotero.org/{zotero_library_type}s/"
+                                                    f"{zotero_library_id}/items/{child['key']}/file?key={zotero_api_key}"
+                                                )
+                                                if ctype == 'application/pdf':
+                                                    try:
+                                                        resp = requests.get(child_file_url, timeout=15)
+                                                        if resp.status_code == 200:
+                                                            text = f"{title}\n{extract_pdf_text(resp.content)}"
+                                                            image_urls = extract_pdf_images(resp.content, max_images=3)
+                                                    except Exception:
+                                                        pass
+                                                elif ctype.startswith('image/'):
+                                                    image_urls.append(child_file_url)
+                                    except Exception:
+                                        pass
+
                                 if item_type == 'attachment' and item['data'].get('contentType') == 'application/pdf':
                                     file_url = (
                                         f"https://api.zotero.org/{zotero_library_type}s/"
@@ -570,8 +602,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                             "content": (
                                 "You are a helpful assistant."
                                 " Base your answer only on the provided context."
-                                " Do not generate a separate Sources section; the app will handle sources display."
-                                " If the documents do not mention a collaboration or relationship, say so clearly."
+                                " If the documents do not describe a collaboration or relationship, state that clearly but still summarize the most relevant related information."
                             )
                         }
                     ]
