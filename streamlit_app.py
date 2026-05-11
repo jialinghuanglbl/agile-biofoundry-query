@@ -605,7 +605,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         # Display images from top sources
                         for doc in cited_docs[:3]:  # Top 3 sources
                             if doc.get('image_urls'):
-                                st.subheader(f"📊 Figures from {doc['title']}")
+                                st.subheader(f"Figures from {doc['title']}")
                                 cols = st.columns(min(3, len(doc['image_urls'])))
                                 for col, img_url in zip(cols, doc['image_urls'][:3]):
                                     with col:
