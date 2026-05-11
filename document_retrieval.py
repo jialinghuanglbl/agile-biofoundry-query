@@ -222,6 +222,7 @@ def create_chunked_documents(
             'doc_type': chunk_data['doc_type'],
             'doc_abstract': chunk_data['doc_abstract'],
             'doc_url': chunk_data.get('doc_url', ''),
+            'doc_image_urls': chunk_data.get('doc_image_urls', []),
             'low_relevance': chunk_data['low_relevance'],
             'chunk_position': doc_chunk_counts[doc_id],
         })

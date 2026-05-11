@@ -262,6 +262,7 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
             'title': info['title'],
             'id': doc_id,
             'url': info.get('url', ''),
+            'image_urls': info.get('image_urls', []),
             'similarity': info['max_similarity'],
             'chunk_count': info['chunk_count']
         }
@@ -272,6 +273,13 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
         cited_docs.append(entry)
 
     return context, cited_docs
+
+
+def remove_sources_block(text: str) -> str:
+    # Remove any model-generated trailing sources block to prevent duplication.
+    import re
+    pattern = r"(?s)\n{2}(?:---\n)?\*{0,2}Sources:\*{0,2}.*$"
+    return re.sub(pattern, "", text).strip()
 
 
 # ==================== APP SETUP ====================
@@ -512,36 +520,32 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        if prompt := st.chat_input(
+        prompt = st.chat_input(
             f"Ask anything about {col_info['name']}...",
             key=f"chat_input_{collection_key}"
-        ):
+        )
+
+        if prompt:
             st.session_state[f"{prefix}_messages"].append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            cache_key = f"{collection_key}:{prompt.lower().strip()}"
+            history = st.session_state[f"{prefix}_messages"]
+            history_text = "\n".join(f"{msg['role']}:{msg['content']}" for msg in history)
+            history_hash = hashlib.sha256(history_text.encode('utf-8')).hexdigest()
+            cache_key = f"{collection_key}:{history_hash}"
 
             with st.chat_message("assistant"):
-                history = st.session_state[f"{prefix}_messages"]
-                history_text = "\n".join(f"{msg['role']}:{msg['content']}" for msg in history)
-                history_hash = hashlib.sha256(history_text.encode('utf-8')).hexdigest()
-                cache_key = f"{collection_key}:{history_hash}"
-
                 if cache_key in st.session_state.query_cache:
                     result = st.session_state.query_cache[cache_key]
                     st.markdown(result)
-
                 elif not index_ready(collection_key):
                     result = "No documents loaded yet. Please load from Zotero first."
                     st.markdown(result)
-
                 elif not client:
                     result = "OpenAI API key not configured."
                     st.markdown(result)
-
                 else:
-                    # FAISS search — milliseconds
                     relevant_chunks, seen_docs = retrieve_relevant_chunks(
                         prompt,
                         st.session_state[f"{prefix}_chunk_vectorizer"],
@@ -552,7 +556,6 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         similarity_threshold=0.12
                     )
 
-                    # Cap context to MAX_CONTEXT_CHARS per chunk before sending
                     context, cited_docs = build_capped_context(
                         relevant_chunks, seen_docs,
                         st.session_state.get('use_summaries', True)
@@ -565,10 +568,10 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         {
                             "role": "system",
                             "content": (
-                                f"You are a helpful assistant."
-                                "Base your answer only on the provided context."
-                                "Try to aim for more than one sentence answers when possible."
-                                "As long as theres one document with summaries mentioning keyu parts of the question, don't let on that you don't have enough context"
+                                "You are a helpful assistant."
+                                " Base your answer only on the provided context."
+                                " Do not generate a separate Sources section; the app will handle sources display."
+                                " If the documents do not mention a collaboration or relationship, say so clearly."
                             )
                         }
                     ]
@@ -585,10 +588,10 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         max_tokens=1024,
                     )
 
-                    # Tokens appear in the UI as they arrive
                     result = st.write_stream(
                         chunk.choices[0].delta.content or "" for chunk in stream
                     )
+                    result = remove_sources_block(result or "")
 
                     if cited_docs:
                         sources = "\n\n---\n**Sources:**\n"
@@ -602,8 +605,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         st.markdown(sources)
                         result = (result or "") + sources
 
-                        # Display images from top sources
-                        for doc in cited_docs[:3]:  # Top 3 sources
+                        for doc in cited_docs[:3]:
                             if doc.get('image_urls'):
                                 st.subheader(f"Figures from {doc['title']}")
                                 cols = st.columns(min(3, len(doc['image_urls'])))
