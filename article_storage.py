@@ -61,7 +61,7 @@ def add_article(
     collection_name: str = "default",
     low_relevance: bool = False,
     url: str = "",
-    image_urls: List[str] = None
+    image_urls: List[Dict] = None
 ) -> Tuple[bool, str]:
     """Add an article to storage if it doesn't already exist"""
     articles_data = load_articles(collection_name)

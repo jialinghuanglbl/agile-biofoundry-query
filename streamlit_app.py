@@ -17,7 +17,17 @@ try:
 except ImportError:
     faiss = None
     FAISS_AVAILABLE = False
-
+try:
+    from PIL import Image
+    import cv2
+    import numpy as np
+    IMAGE_PROCESSING_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Image processing libraries not available: {e}")
+    Image = None
+    cv2 = None
+    np = None
+    IMAGE_PROCESSING_AVAILABLE = False
 try:
     import fitz
     FITZ_AVAILABLE = True
@@ -115,6 +125,254 @@ def extract_pdf_images(pdf_content, max_images: int = 3):
         
     except Exception as e:
         print(f"Error extracting images: {str(e)}")
+        return []
+
+
+def classify_image_region(cv_img, x, y, w, h):
+    """Classify an extracted image region based on its characteristics."""
+    if cv_img is None:
+        return "unknown"
+    
+    roi = cv_img[y:y+h, x:x+w]
+    if roi.size == 0:
+        return "unknown"
+    
+    height, width = roi.shape[:2]
+    aspect_ratio = width / height if height > 0 else 1
+    
+    # Convert to HSV for color analysis
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    
+    # Calculate color statistics
+    hue_std = np.std(hsv[:, :, 0])
+    sat_mean = np.mean(hsv[:, :, 1])
+    val_mean = np.mean(hsv[:, :, 2])
+    
+    # Simple classification rules
+    if aspect_ratio > 2:  # Wide images
+        if sat_mean > 100:  # High saturation
+            return "chart"
+        else:
+            return "diagram"
+    elif aspect_ratio < 0.5:  # Tall images
+        return "graph"
+    elif hue_std > 40 and sat_mean > 80:  # High color variation and saturation
+        return "color_figure"
+    elif val_mean < 100:  # Dark images
+        return "microscopy"
+    else:
+        return "figure"
+
+
+def detect_colorful_rectangles(pdf_content, max_images: int = 3):
+    """Detect and extract colorful rectangular regions from PDF pages that appear to be images."""
+    if not (FITZ_AVAILABLE and IMAGE_PROCESSING_AVAILABLE):
+        # Fallback: just return page previews if image processing isn't available
+        if FITZ_AVAILABLE:
+            try:
+                pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
+                page = pdf_doc[0]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                img_bytes = pix.tobytes("png")
+                b64_img = base64.b64encode(img_bytes).decode('utf-8')
+                pdf_doc.close()
+                return [{
+                    'data': f"data:image/png;base64,{b64_img}",
+                    'classification': 'page_preview',
+                    'page': 1
+                }]
+            except Exception:
+                pass
+        return []
+    
+    try:
+        pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
+        extracted_images = []
+        
+        for page_num in range(min(5, len(pdf_doc))):  # Check first 5 pages
+            if len(extracted_images) >= max_images:
+                break
+                
+            page = pdf_doc[page_num]
+            
+            # Render page at high resolution for better detection
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img_bytes = pix.tobytes("png")
+            
+            # Convert to PIL Image
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            
+            # Convert to OpenCV format
+            cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            
+            # Convert to HSV for better color analysis
+            hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
+            
+            # Calculate colorfulness metric (standard deviation of hue and saturation)
+            hue_std = np.std(hsv[:, :, 0])
+            sat_std = np.std(hsv[:, :, 1])
+            colorfulness = hue_std + sat_std
+            
+            # Skip pages that are mostly grayscale/low color
+            if colorfulness < 30:  # Threshold for "colorful"
+                continue
+            
+            # Find contours of potential image regions
+            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            edged = cv2.Canny(blurred, 50, 150)
+            
+            contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Filter contours that look like rectangular images
+            for contour in contours:
+                # Approximate the contour
+                peri = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                
+                # Check if it's roughly rectangular (4 vertices)
+                if len(approx) == 4:
+                    # Get bounding rectangle
+                    x, y, w, h = cv2.boundingRect(approx)
+                    
+                    # Filter by size (not too small, not the whole page)
+                    img_area = w * h
+                    page_area = cv_img.shape[0] * cv_img.shape[1]
+                    
+                    if img_area > page_area * 0.01 and img_area < page_area * 0.8:  # 1% to 80% of page
+                        aspect_ratio = max(w, h) / min(w, h)
+                        
+                        # Reasonable aspect ratio for images (not too skinny)
+                        if 0.1 < aspect_ratio < 10:
+                            # Classify the region
+                            classification = classify_image_region(cv_img, x, y, w, h)
+                            
+                            # Extract the region
+                            roi = cv_img[y:y+h, x:x+w]
+                            
+                            # Convert back to PIL for base64 encoding
+                            roi_pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
+                            
+                            # Resize if too large (max 800px on longest side)
+                            max_size = 800
+                            if max(roi_pil.size) > max_size:
+                                ratio = max_size / max(roi_pil.size)
+                                new_size = (int(roi_pil.size[0] * ratio), int(roi_pil.size[1] * ratio))
+                                roi_pil = roi_pil.resize(new_size, Image.LANCZOS)
+                            
+                            # Encode as base64
+                            buffer = io.BytesIO()
+                            roi_pil.save(buffer, format="PNG")
+                            img_bytes = buffer.getvalue()
+                            b64_img = base64.b64encode(img_bytes).decode('utf-8')
+                            
+                            # Store with classification metadata
+                            extracted_images.append({
+                                'data': f"data:image/png;base64,{b64_img}",
+                                'classification': classification,
+                                'page': page_num + 1
+                            })
+                            
+                            if len(extracted_images) >= max_images:
+                                break
+            
+            if len(extracted_images) >= max_images:
+                break
+        
+        pdf_doc.close()
+        return extracted_images
+        
+    except Exception as e:
+        print(f"Error detecting colorful rectangles: {str(e)}")
+        return []
+        
+        for page_num in range(min(5, len(pdf_doc))):  # Check first 5 pages
+            if len(extracted_images) >= max_images:
+                break
+                
+            page = pdf_doc[page_num]
+            
+            # Render page at high resolution for better detection
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img_bytes = pix.tobytes("png")
+            
+            # Convert to PIL Image
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            
+            # Convert to OpenCV format
+            cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            
+            # Convert to HSV for better color analysis
+            hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
+            
+            # Calculate colorfulness metric (standard deviation of hue and saturation)
+            hue_std = np.std(hsv[:, :, 0])
+            sat_std = np.std(hsv[:, :, 1])
+            colorfulness = hue_std + sat_std
+            
+            # Skip pages that are mostly grayscale/low color
+            if colorfulness < 30:  # Threshold for "colorful"
+                continue
+            
+            # Find contours of potential image regions
+            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            edged = cv2.Canny(blurred, 50, 150)
+            
+            contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Filter contours that look like rectangular images
+            for contour in contours:
+                # Approximate the contour
+                peri = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                
+                # Check if it's roughly rectangular (4 vertices)
+                if len(approx) == 4:
+                    # Get bounding rectangle
+                    x, y, w, h = cv2.boundingRect(approx)
+                    
+                    # Filter by size (not too small, not the whole page)
+                    img_area = w * h
+                    page_area = cv_img.shape[0] * cv_img.shape[1]
+                    
+                    if img_area > page_area * 0.01 and img_area < page_area * 0.8:  # 1% to 80% of page
+                        aspect_ratio = max(w, h) / min(w, h)
+                        
+                        # Reasonable aspect ratio for images (not too skinny)
+                        if 0.1 < aspect_ratio < 10:
+                            # Extract the region
+                            roi = cv_img[y:y+h, x:x+w]
+                            
+                            # Convert back to PIL for base64 encoding
+                            roi_pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
+                            
+                            # Resize if too large (max 800px on longest side)
+                            max_size = 800
+                            if max(roi_pil.size) > max_size:
+                                ratio = max_size / max(roi_pil.size)
+                                new_size = (int(roi_pil.size[0] * ratio), int(roi_pil.size[1] * ratio))
+                                roi_pil = roi_pil.resize(new_size, Image.LANCZOS)
+                            
+                            # Encode as base64
+                            buffer = io.BytesIO()
+                            roi_pil.save(buffer, format="PNG")
+                            img_bytes = buffer.getvalue()
+                            b64_img = base64.b64encode(img_bytes).decode('utf-8')
+                            
+                            extracted_images.append(f"data:image/png;base64,{b64_img}")
+                            
+                            if len(extracted_images) >= max_images:
+                                break
+            
+            if len(extracted_images) >= max_images:
+                break
+        
+        pdf_doc.close()
+        return extracted_images
+        
+    except Exception as e:
+        print(f"Error detecting colorful rectangles: {str(e)}")
         return []
 
 
@@ -495,7 +753,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                                         resp = requests.get(child_file_url, timeout=15)
                                                         if resp.status_code == 200:
                                                             text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                                            image_urls = extract_pdf_images(resp.content, max_images=3)
+                                                            image_urls = detect_colorful_rectangles(resp.content, max_images=3)
                                                     except Exception:
                                                         pass
                                                 elif ctype.startswith('image/'):
@@ -512,7 +770,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                         resp = requests.get(file_url, timeout=15)
                                         if resp.status_code == 200:
                                             text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                            image_urls = extract_pdf_images(resp.content, max_images=3)
+                                            image_urls = detect_colorful_rectangles(resp.content, max_images=3)
                                     except Exception:
                                         pass
 
@@ -638,17 +896,35 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
 
                         for doc in cited_docs[:3]:
                             if doc.get('image_urls'):
-                                st.subheader(f"Figures from {doc['title']}")
-                                cols = st.columns(min(3, len(doc['image_urls'])))
-                                for col, img_url in zip(cols, doc['image_urls'][:3]):
-                                    with col:
-                                        if img_url.startswith('data:image'):
-                                            st.image(img_url, use_column_width=True)
-                                        else:
-                                            try:
-                                                st.image(img_url, use_column_width=True)
-                                            except Exception:
-                                                pass
+                                # Group images by classification
+                                classified_images = {}
+                                for img_data in doc['image_urls']:
+                                    if isinstance(img_data, dict):
+                                        classification = img_data.get('classification', 'figure')
+                                        if classification not in classified_images:
+                                            classified_images[classification] = []
+                                        classified_images[classification].append(img_data)
+                                    elif isinstance(img_data, str):
+                                        # Handle legacy string format
+                                        if 'figure' not in classified_images:
+                                            classified_images['figure'] = []
+                                        classified_images['figure'].append({'data': img_data})
+                                
+                                # Display images grouped by classification
+                                for classification, images in classified_images.items():
+                                    if images:
+                                        st.subheader(f"{classification.title()}s from {doc['title']}")
+                                        cols = st.columns(min(3, len(images)))
+                                        for col, img_data in zip(cols, images[:3]):
+                                            with col:
+                                                img_url = img_data.get('data', img_data) if isinstance(img_data, dict) else img_data
+                                                if img_url.startswith('data:image'):
+                                                    st.image(img_url, use_column_width=True)
+                                                else:
+                                                    try:
+                                                        st.image(img_url, use_column_width=True)
+                                                    except Exception:
+                                                        pass
 
                 st.session_state.query_cache[cache_key] = result
 
