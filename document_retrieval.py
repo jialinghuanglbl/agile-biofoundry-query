@@ -129,8 +129,19 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
 
 
 def extract_page_number(text: str) -> Optional[str]:
-    match = re.search(r"Page\s+(\d+)", text, re.IGNORECASE)
+    match = re.search(r"\b(?:Page|page|Pg|pg|pp|p)\.?\s*(\d+)\b", text, re.IGNORECASE)
     return match.group(1) if match else None
+
+
+def _caption_matches_chunk(caption: str, chunk_text: str) -> bool:
+    if not caption or not chunk_text:
+        return False
+    caption_words = [w for w in re.split(r"\W+", caption.lower()) if len(w) >= 3]
+    chunk_text_lower = chunk_text.lower()
+    if not caption_words:
+        return False
+    matches = sum(1 for word in caption_words[:5] if word in chunk_text_lower)
+    return matches >= 2
 
 
 def summarize_chunk(text: str, max_sentences: int = 1, _vectorizer: TfidfVectorizer = None) -> str:
@@ -181,12 +192,18 @@ def create_chunked_documents(
             use_summary_sentences = summary_sentences
 
         for chunk in chunks:
-            chunk_page = extract_page_number(chunk['text'])
+            chunk_text = chunk['text']
+            chunk_page = extract_page_number(chunk_text)
             chunk_image_urls = []
-            if chunk_page:
-                for image_meta in metadata.get('image_urls', []):
-                    if isinstance(image_meta, dict) and str(image_meta.get('page', '')) == str(chunk_page):
-                        chunk_image_urls.append(image_meta)
+            for image_meta in metadata.get('image_urls', []):
+                if not isinstance(image_meta, dict):
+                    continue
+                if chunk_page and str(image_meta.get('page', '')) == str(chunk_page):
+                    chunk_image_urls.append(image_meta)
+                    continue
+                caption = str(image_meta.get('caption', '')).strip()
+                if _caption_matches_chunk(caption, chunk_text):
+                    chunk_image_urls.append(image_meta)
 
             raw_chunks.append({
                 'text': chunk['text'],

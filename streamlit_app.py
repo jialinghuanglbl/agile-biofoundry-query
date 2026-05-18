@@ -208,11 +208,44 @@ def _find_connected_components(mask):
     return components
 
 
+def _find_pdf_image_block_regions(page, max_regions: int = 3, zoom: int = 2):
+    try:
+        blocks = page.get_text("dict").get("blocks", [])
+    except Exception:
+        return []
+
+    page_area = page.rect.width * page.rect.height
+    candidates = []
+    for block in blocks:
+        if block.get("type") != 1:
+            continue
+        bbox = block.get("bbox", [])
+        if len(bbox) != 4:
+            continue
+        x0, y0, x1, y1 = [int(v * zoom) for v in bbox]
+        width = x1 - x0
+        height = y1 - y0
+        area = width * height
+        if area < page_area * 0.01 or area > page_area * 0.7:
+            continue
+        aspect_ratio = width / height if height > 0 else 0
+        if aspect_ratio < 0.2 or aspect_ratio > 6:
+            continue
+        candidates.append((x0, y0, x1, y1))
+        if len(candidates) >= max_regions:
+            break
+    return candidates
+
+
 def _find_image_regions_on_page(pil_img, page, max_regions: int = 3, zoom: int = 2):
+    block_regions = _find_pdf_image_block_regions(page, max_regions=max_regions, zoom=zoom)
+    if block_regions:
+        return [(x0, y0, x1, y1, 'embedded') for x0, y0, x1, y1 in block_regions]
+
     gray = pil_img.convert("L")
     edge_image = gray.filter(ImageFilter.FIND_EDGES)
     edge_arr = np.array(edge_image, dtype=np.uint8)
-    mask = edge_arr > 30
+    mask = edge_arr > 15
 
     components = _find_connected_components(mask)
     page_area = mask.shape[0] * mask.shape[1]
@@ -222,14 +255,14 @@ def _find_image_regions_on_page(pil_img, page, max_regions: int = 3, zoom: int =
         width = x1 - x0
         height = y1 - y0
         area = width * height
-        if area < page_area * 0.01 or area > page_area * 0.7:
+        if area < page_area * 0.015 or area > page_area * 0.6:
             continue
         aspect_ratio = width / height if height > 0 else 0
-        if aspect_ratio < 0.3 or aspect_ratio > 5:
+        if aspect_ratio < 0.2 or aspect_ratio > 6:
             continue
         if not _region_looks_like_image(page, (x0, y0, x1, y1), zoom=zoom, edge_mask=mask):
             continue
-        candidates.append((x0, y0, x1, y1))
+        candidates.append((x0, y0, x1, y1, 'heuristic'))
         if len(candidates) >= max_regions:
             break
 
@@ -283,7 +316,7 @@ def detect_colorful_rectangles(pdf_content, max_images: int = 3):
             pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
 
             regions = _find_image_regions_on_page(pil_img, page, max_regions=remaining, zoom=2)
-            for x0, y0, x1, y1 in regions:
+            for x0, y0, x1, y1, source in regions:
                 if len(extracted_images) >= max_images:
                     break
 
@@ -298,9 +331,9 @@ def detect_colorful_rectangles(pdf_content, max_images: int = 3):
                 b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
                 extracted_images.append({
                     'data': f"data:image/png;base64,{b64_img}",
-                    'classification': 'heuristic',
+                    'classification': source,
                     'page': page_num + 1,
-                    'source': 'heuristic',
+                    'source': source,
                     'caption': caption
                 })
                 remaining -= 1
