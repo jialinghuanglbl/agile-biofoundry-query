@@ -547,9 +547,41 @@ def render_article_preview(relevant_chunks):
     st.caption(" · ".join(meta_parts))
 
     preview_doc_id = top_chunk.get('doc_id')
-    preview_chunks = [chunk for chunk in relevant_chunks if chunk.get('doc_id') == preview_doc_id]
-    preview_texts = [chunk.get('text', '').strip() for chunk in preview_chunks if chunk.get('text')]
-    preview_text = "\n\n---\n\n".join(preview_texts) if preview_texts else top_chunk.get('text', '')
+    same_doc_chunks = [chunk for chunk in relevant_chunks if chunk.get('doc_id') == preview_doc_id]
+    same_doc_chunks = sorted(
+        same_doc_chunks,
+        key=lambda chunk: (chunk.get('chunk_position') is None, chunk.get('chunk_position', 0))
+    )
+
+    chunk_index = 0
+    if top_chunk.get('chunk_position') is not None:
+        for idx, chunk in enumerate(same_doc_chunks):
+            if chunk.get('chunk_position') == top_chunk.get('chunk_position'):
+                chunk_index = idx
+                break
+
+    start_idx = max(0, chunk_index - 1)
+    end_idx = min(len(same_doc_chunks), chunk_index + 2)
+    preview_chunks = same_doc_chunks[start_idx:end_idx]
+
+    preview_sections = []
+    for chunk in preview_chunks:
+        chunk_title = []
+        if chunk.get('chunk_position') is not None:
+            chunk_title.append(f"Section {chunk['chunk_position']}")
+        if chunk.get('page'):
+            chunk_title.append(f"Page {chunk['page']}")
+        if chunk.get('timestamp'):
+            chunk_title.append(str(chunk['timestamp']))
+        header = " | ".join(chunk_title) if chunk_title else ""
+        if header:
+            preview_sections.append(f"[{header}]\n{chunk.get('text', '').strip()}")
+        else:
+            preview_sections.append(chunk.get('text', '').strip())
+
+    preview_text = "\n\n---\n\n".join(preview_sections).strip()
+    if not preview_text:
+        preview_text = top_chunk.get('text', '').strip() or "No preview text available."
 
     st.text_area(
         "Preview",
