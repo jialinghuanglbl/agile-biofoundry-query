@@ -216,6 +216,9 @@ def detect_colorful_rectangles(pdf_content, max_images: int = 3):
             if len(extracted_images) >= max_images:
                 break
 
+        if not extracted_images:
+            # Fallback to embedded PDF image extraction when rectangle heuristics fail
+            extracted_images = extract_pdf_images(pdf_content, max_images=max_images)
         pdf_doc.close()
         return extracted_images
     except Exception as e:
