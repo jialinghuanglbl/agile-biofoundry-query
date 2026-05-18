@@ -711,18 +711,28 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                     except Exception:
                                         pass
 
-                                if item_type == 'attachment' and item['data'].get('contentType') == 'application/pdf':
+                                if item_type == 'attachment':
+                                    content_type = item['data'].get('contentType', '')
                                     file_url = (
                                         f"https://api.zotero.org/{zotero_library_type}s/"
                                         f"{zotero_library_id}/items/{zotero_id}/file?key={zotero_api_key}"
                                     )
-                                    try:
-                                        resp = requests.get(file_url, timeout=15)
-                                        if resp.status_code == 200:
-                                            text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                            image_urls = detect_colorful_rectangles(resp.content, max_images=3)
-                                    except Exception:
-                                        pass
+
+                                    if content_type == 'application/pdf':
+                                        try:
+                                            resp = requests.get(file_url, timeout=15)
+                                            if resp.status_code == 200:
+                                                text = f"{title}\n{extract_pdf_text(resp.content)}"
+                                                image_urls = detect_colorful_rectangles(resp.content, max_images=3)
+                                        except Exception:
+                                            pass
+                                    elif content_type.startswith('image/'):
+                                        image_urls.append({
+                                            'data': file_url,
+                                            'source': 'embedded',
+                                            'classification': 'embedded',
+                                            'page': None,
+                                        })
 
                                 success, _ = add_article(
                                     zotero_id, text, title, item_type,
