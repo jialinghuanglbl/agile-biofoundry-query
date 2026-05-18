@@ -237,6 +237,8 @@ def create_chunked_documents(
             'doc_abstract': chunk_data['doc_abstract'],
             'doc_url': chunk_data.get('doc_url', ''),
             'doc_image_urls': chunk_data.get('doc_image_urls', []),
+            'chunk_image_urls': chunk_data.get('chunk_image_urls', []),
+            'chunk_page': chunk_data.get('chunk_page'),
             'low_relevance': chunk_data['low_relevance'],
             'chunk_position': doc_chunk_counts[doc_id],
         })
@@ -303,12 +305,29 @@ def retrieve_relevant_chunks(
         doc_ids_included.add(doc_id)
 
         chunk_images = chunk.get('chunk_image_urls') or []
+        doc_images = chunk.get('doc_image_urls', []) or []
+        selected_images = chunk_images if chunk_images else doc_images
+
+        def _derive_image_status(images):
+            if not images:
+                return 'none'
+            if any(isinstance(img, dict) and img.get('source') == 'embedded' for img in images):
+                return 'embedded'
+            if any(isinstance(img, dict) and img.get('source') == 'heuristic' for img in images):
+                return 'heuristic'
+            if any(isinstance(img, dict) and img.get('source') == 'preview' for img in images):
+                return 'heuristic'
+            return 'heuristic'
+
+        selected_status = _derive_image_status(selected_images)
+
         if doc_id not in seen_docs:
             seen_docs[doc_id] = {
                 'title': chunk['doc_title'],
                 'type': chunk['doc_type'],
                 'url': chunk.get('doc_url', ''),
-                'image_urls': chunk_images or chunk.get('doc_image_urls', []),
+                'image_urls': selected_images,
+                'image_status': selected_status,
                 'max_similarity': chunk['similarity'],
                 'best_chunk_image_similarity': chunk['similarity'] if chunk_images else 0.0,
                 'chunk_count': 0,
@@ -318,6 +337,7 @@ def retrieve_relevant_chunks(
         info = seen_docs[doc_id]
         if chunk_images and chunk['similarity'] > info.get('best_chunk_image_similarity', 0):
             info['image_urls'] = chunk_images
+            info['image_status'] = _derive_image_status(chunk_images)
             info['best_chunk_image_similarity'] = chunk['similarity']
         info['chunk_count'] += 1
         info['max_similarity'] = max(info.get('max_similarity', 0), chunk['similarity'])
@@ -370,6 +390,7 @@ def format_context_from_chunks(
             'id': doc_id,
             'url': info.get('url', ''),
             'image_urls': info.get('image_urls', []),
+            'image_status': info.get('image_status', 'none'),
             'similarity': info['max_similarity'],
             'chunk_count': info['chunk_count']
         }

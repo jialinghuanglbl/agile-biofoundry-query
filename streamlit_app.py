@@ -837,10 +837,16 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         for doc in cited_docs:
                             title = doc['title']
                             url = doc.get('url', '')
+                            status = doc.get('image_status', 'none')
+                            status_label = {
+                                'embedded': 'embedded image',
+                                'heuristic': 'heuristic image',
+                                'none': 'no image'
+                            }.get(status, 'no image')
                             if url:
-                                sources += f"- [{title}]({url}) (Relevance: {doc['similarity']:.1%})\n"
+                                sources += f"- [{title}]({url}) (Relevance: {doc['similarity']:.1%}; {status_label})\n"
                             else:
-                                sources += f"- {title} (Relevance: {doc['similarity']:.1%})\n"
+                                sources += f"- {title} (Relevance: {doc['similarity']:.1%}; {status_label})\n"
                         st.markdown(sources)
                         result = (result or "") + sources
 
