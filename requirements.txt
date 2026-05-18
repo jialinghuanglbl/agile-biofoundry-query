@@ -11,4 +11,3 @@ joblib
 groq
 pymupdf
 Pillow
-opencv-python
