@@ -18,7 +18,7 @@ except ImportError:
     faiss = None
     FAISS_AVAILABLE = False
 try:
-    from PIL import Image
+    from PIL import Image, ImageFilter
     import numpy as np
     IMAGE_PROCESSING_AVAILABLE = True
 except ImportError as e:
@@ -74,56 +74,166 @@ def extract_pdf_images(pdf_content, max_images: int = 3):
     """Extract embedded images from PDF using PyMuPDF (fitz)."""
     if not FITZ_AVAILABLE:
         return []
-    
+
     try:
         pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
         images_data = []
-        image_count = 0
-        
-        for page_num in range(len(pdf_doc)):
-            if image_count >= max_images:
-                break
-            
-            page = pdf_doc[page_num]
-            image_list = page.get_images()
-            
-            for img_index in image_list:
-                if image_count >= max_images:
-                    break
-                    
-                xref = img_index[0]
-                pix = fitz.Pixmap(pdf_doc, xref)
-                
-                # Convert to PNG if needed
-                if pix.n - pix.alpha < 4:  # Grayscale or RGB
-                    timage = fitz.Pixmap(fitz.csRGB, pix)
-                else:
-                    timage = pix
-                
-                # Encode as base64 PNG
-                img_bytes = timage.tobytes("png")
-                b64_img = base64.b64encode(img_bytes).decode('utf-8')
-                images_data.append(f"data:image/png;base64,{b64_img}")
-                image_count += 1
-                
-                if pix != timage:
-                    timage = None
-                    
-        if images_data:
-            pdf_doc.close()
-            return images_data
+        seen_xrefs = set()
 
-        # Fallback: render the first page as preview if no embedded figures were found.
-        page = pdf_doc[0]
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        img_bytes = pix.tobytes("png")
-        b64_img = base64.b64encode(img_bytes).decode('utf-8')
+        for page_num in range(len(pdf_doc)):
+            if len(images_data) >= max_images:
+                break
+
+            page = pdf_doc[page_num]
+            image_list = page.get_images(full=True)
+
+            for img_index in image_list:
+                if len(images_data) >= max_images:
+                    break
+
+                xref = img_index[0]
+                if xref in seen_xrefs:
+                    continue
+                seen_xrefs.add(xref)
+
+                try:
+                    pix = fitz.Pixmap(pdf_doc, xref)
+                    if pix.n - pix.alpha < 4:
+                        timage = fitz.Pixmap(fitz.csRGB, pix)
+                    else:
+                        timage = pix
+
+                    img_bytes = timage.tobytes("png")
+                    b64_img = base64.b64encode(img_bytes).decode('utf-8')
+                    images_data.append({
+                        'data': f"data:image/png;base64,{b64_img}",
+                        'page': page_num + 1,
+                        'source': 'embedded',
+                        'classification': 'embedded',
+                        'caption': ''
+                    })
+                except Exception:
+                    continue
+
         pdf_doc.close()
-        return [f"data:image/png;base64,{b64_img}"]
-        
+        return images_data
     except Exception as e:
         print(f"Error extracting images: {str(e)}")
         return []
+
+
+def _extract_caption_from_page(page, bbox, zoom=2):
+    try:
+        captions = []
+        x0, y0, x1, y1 = bbox
+        for block in page.get_text("blocks") or []:
+            bx0, by0, bx1, by1, text = block[:5]
+            if not isinstance(text, str) or not text.strip():
+                continue
+            bx0, by0, bx1, by1 = bx0 * zoom, by0 * zoom, bx1 * zoom, by1 * zoom
+            if by0 >= y1 and by0 <= y1 + max(80, int((y1 - y0) * 0.75)) and not (bx1 < x0 or bx0 > x1):
+                captions.append(text.strip())
+
+        for caption in captions:
+            if re.search(r"\bfig(?:ure)?\b", caption, re.I):
+                return caption
+        return captions[0] if captions else ""
+    except Exception:
+        return ""
+
+
+def _region_looks_like_image(page, bbox, zoom=2, edge_mask=None):
+    x0, y0, x1, y1 = bbox
+    width = x1 - x0
+    height = y1 - y0
+    if width < 40 or height < 40:
+        return False
+
+    if edge_mask is not None:
+        region = edge_mask[y0:y1, x0:x1]
+        density = float(region.sum()) / max(1, width * height)
+        if density < 0.002:
+            return False
+
+    overlap = 0
+    region_area = width * height
+    for block in page.get_text("blocks") or []:
+        bx0, by0, bx1, by1, text = block[:5]
+        if not isinstance(text, str) or not text.strip():
+            continue
+        bx0, by0, bx1, by1 = bx0 * zoom, by0 * zoom, bx1 * zoom, by1 * zoom
+        if bx1 <= x0 or bx0 >= x1 or by1 <= y0 or by0 >= y1:
+            continue
+        overlap_x = max(0, min(x1, bx1) - max(x0, bx0))
+        overlap_y = max(0, min(y1, by1) - max(y0, by0))
+        overlap += overlap_x * overlap_y
+
+    if region_area > 0 and overlap / region_area > 0.4:
+        return False
+
+    return True
+
+
+def _find_connected_components(mask):
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    components = []
+
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or visited[y, x]:
+                continue
+            stack = [(y, x)]
+            visited[y, x] = True
+            y0 = y1 = y
+            x0 = x1 = x
+            count = 0
+
+            while stack:
+                cy, cx = stack.pop()
+                count += 1
+                y0 = min(y0, cy)
+                y1 = max(y1, cy)
+                x0 = min(x0, cx)
+                x1 = max(x1, cx)
+
+                for ny in (cy - 1, cy, cy + 1):
+                    for nx in (cx - 1, cx, cx + 1):
+                        if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+
+            components.append((x0, y0, x1 + 1, y1 + 1, count))
+
+    return components
+
+
+def _find_image_regions_on_page(pil_img, page, max_regions: int = 3, zoom: int = 2):
+    gray = pil_img.convert("L")
+    edge_image = gray.filter(ImageFilter.FIND_EDGES)
+    edge_arr = np.array(edge_image, dtype=np.uint8)
+    mask = edge_arr > 30
+
+    components = _find_connected_components(mask)
+    page_area = mask.shape[0] * mask.shape[1]
+    candidates = []
+
+    for x0, y0, x1, y1, count in sorted(components, key=lambda item: (item[2] - item[0]) * (item[3] - item[1]), reverse=True):
+        width = x1 - x0
+        height = y1 - y0
+        area = width * height
+        if area < page_area * 0.01 or area > page_area * 0.7:
+            continue
+        aspect_ratio = width / height if height > 0 else 0
+        if aspect_ratio < 0.3 or aspect_ratio > 5:
+            continue
+        if not _region_looks_like_image(page, (x0, y0, x1, y1), zoom=zoom, edge_mask=mask):
+            continue
+        candidates.append((x0, y0, x1, y1))
+        if len(candidates) >= max_regions:
+            break
+
+    return candidates
 
 
 def classify_image_region(pil_img):
@@ -153,72 +263,62 @@ def classify_image_region(pil_img):
 
 
 def detect_colorful_rectangles(pdf_content, max_images: int = 3):
-    """Detect and extract grayscale/high-variance rectangular regions from PDF pages."""
+    """Extract embedded images first, then use rendered rectangle heuristics as a fallback."""
     if not FITZ_AVAILABLE:
         return []
 
     try:
-        pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
-        extracted_images = []
+        extracted_images = extract_pdf_images(pdf_content, max_images=max_images)
+        remaining = max_images - len(extracted_images)
+        if remaining <= 0:
+            return extracted_images
 
-        for page_num in range(min(10, len(pdf_doc))):
+        pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
+        for page_num in range(len(pdf_doc)):
             if len(extracted_images) >= max_images:
                 break
 
             page = pdf_doc[page_num]
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
             pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
-            gray = pil_img.convert("L")
-            arr = np.array(gray, dtype=np.float32)
 
-            if arr.std() < 20:
-                continue
+            regions = _find_image_regions_on_page(pil_img, page, max_regions=remaining, zoom=2)
+            for x0, y0, x1, y1 in regions:
+                if len(extracted_images) >= max_images:
+                    break
 
-            block_size = 64
-            h, w = arr.shape
-            high_var_blocks = []
-            for y in range(0, h - block_size + 1, block_size):
-                for x in range(0, w - block_size + 1, block_size):
-                    block = arr[y:y+block_size, x:x+block_size]
-                    if block.std() > 45:
-                        high_var_blocks.append((x, y))
+                region = pil_img.crop((max(0, x0 - 5), max(0, y0 - 5), min(pil_img.width, x1 + 5), min(pil_img.height, y1 + 5)))
+                region_arr = np.array(region.convert("L"), dtype=np.float32)
+                if region_arr.std() < 20:
+                    continue
 
-            if not high_var_blocks:
-                continue
-
-            xs = [x for x, y in high_var_blocks]
-            ys = [y for x, y in high_var_blocks]
-            x0 = max(0, min(xs) - 10)
-            y0 = max(0, min(ys) - 10)
-            x1 = min(w, max(xs) + block_size + 10)
-            y1 = min(h, max(ys) + block_size + 10)
-
-            region = pil_img.crop((x0, y0, x1, y1))
-            region_arr = np.array(region.convert("L"), dtype=np.float32)
-            if region_arr.std() < 30:
-                continue
-
-            area = (x1 - x0) * (y1 - y0)
-            page_area = h * w
-            if area < page_area * 0.01 or area > page_area * 0.8:
-                continue
-
-            buffer = io.BytesIO()
-            region.save(buffer, format="PNG")
-            b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            classification = classify_image_region(region)
-            extracted_images.append({
-                'data': f"data:image/png;base64,{b64_img}",
-                'classification': classification,
-                'page': page_num + 1
-            })
-
-            if len(extracted_images) >= max_images:
-                break
+                caption = _extract_caption_from_page(page, (x0, y0, x1, y1), zoom=2)
+                buffer = io.BytesIO()
+                region.save(buffer, format="PNG")
+                b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                extracted_images.append({
+                    'data': f"data:image/png;base64,{b64_img}",
+                    'classification': 'heuristic',
+                    'page': page_num + 1,
+                    'source': 'heuristic',
+                    'caption': caption
+                })
+                remaining -= 1
 
         if not extracted_images:
-            # Fallback to embedded PDF image extraction when rectangle heuristics fail
-            extracted_images = extract_pdf_images(pdf_content, max_images=max_images)
+            page = pdf_doc[0]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            buffer = io.BytesIO()
+            Image.open(io.BytesIO(pix.tobytes("png"))).save(buffer, format="PNG")
+            b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            extracted_images.append({
+                'data': f"data:image/png;base64,{b64_img}",
+                'classification': 'page_preview',
+                'page': 1,
+                'source': 'preview',
+                'caption': ''
+            })
+
         pdf_doc.close()
         return extracted_images
     except Exception as e:

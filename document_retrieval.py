@@ -128,6 +128,11 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
     return chunks
 
 
+def extract_page_number(text: str) -> Optional[str]:
+    match = re.search(r"Page\s+(\d+)", text, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def summarize_chunk(text: str, max_sentences: int = 1, _vectorizer: TfidfVectorizer = None) -> str:
     """
     Summarize a chunk to its most informative sentence.
@@ -176,6 +181,13 @@ def create_chunked_documents(
             use_summary_sentences = summary_sentences
 
         for chunk in chunks:
+            chunk_page = extract_page_number(chunk['text'])
+            chunk_image_urls = []
+            if chunk_page:
+                for image_meta in metadata.get('image_urls', []):
+                    if isinstance(image_meta, dict) and str(image_meta.get('page', '')) == str(chunk_page):
+                        chunk_image_urls.append(image_meta)
+
             raw_chunks.append({
                 'text': chunk['text'],
                 'doc_id': doc_id,
@@ -184,6 +196,8 @@ def create_chunked_documents(
                 'doc_abstract': metadata.get('abstract', ''),
                 'doc_url': metadata.get('url', ''),
                 'doc_image_urls': metadata.get('image_urls', []),
+                'chunk_image_urls': chunk_image_urls,
+                'chunk_page': chunk_page,
                 'low_relevance': metadata.get('low_relevance', False),
                 'use_summary_sentences': use_summary_sentences,
             })
@@ -288,18 +302,23 @@ def retrieve_relevant_chunks(
         relevant_chunks.append(chunk)
         doc_ids_included.add(doc_id)
 
+        chunk_images = chunk.get('chunk_image_urls') or []
         if doc_id not in seen_docs:
             seen_docs[doc_id] = {
                 'title': chunk['doc_title'],
                 'type': chunk['doc_type'],
                 'url': chunk.get('doc_url', ''),
-                'image_urls': chunk.get('doc_image_urls', []),
+                'image_urls': chunk_images or chunk.get('doc_image_urls', []),
                 'max_similarity': chunk['similarity'],
+                'best_chunk_image_similarity': chunk['similarity'] if chunk_images else 0.0,
                 'chunk_count': 0,
                 'pages': set(),
                 'timestamps': set()
             }
         info = seen_docs[doc_id]
+        if chunk_images and chunk['similarity'] > info.get('best_chunk_image_similarity', 0):
+            info['image_urls'] = chunk_images
+            info['best_chunk_image_similarity'] = chunk['similarity']
         info['chunk_count'] += 1
         info['max_similarity'] = max(info.get('max_similarity', 0), chunk['similarity'])
         if chunk.get('page'):
