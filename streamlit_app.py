@@ -893,43 +893,5 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         st.markdown(sources)
                         result = (result or "") + sources
 
-                        for doc in cited_docs[:3]:
-                            if doc.get('image_urls'):
-                                # Group images by classification
-                                classified_images = {}
-                                for img_data in doc['image_urls']:
-                                    if isinstance(img_data, dict):
-                                        classification = img_data.get('classification', 'figure')
-                                        if classification not in classified_images:
-                                            classified_images[classification] = []
-                                        classified_images[classification].append(img_data)
-                                    elif isinstance(img_data, str):
-                                        # Handle legacy string format
-                                        if 'figure' not in classified_images:
-                                            classified_images['figure'] = []
-                                        classified_images['figure'].append({'data': img_data})
-                                
-                                # Display images grouped by classification
-                                for classification, images in classified_images.items():
-                                    if images:
-                                        st.subheader(f"{classification.title()}s from {doc['title']}")
-                                        cols = st.columns(min(3, len(images)))
-                                        for col, img_data in zip(cols, images[:3]):
-                                            with col:
-                                                img_url = img_data.get('data', img_data) if isinstance(img_data, dict) else img_data
-                                                if img_url.startswith('data:image'):
-                                                    st.image(img_url, use_column_width=True)
-                                                else:
-                                                    try:
-                                                        st.image(img_url, use_column_width=True)
-                                                    except Exception:
-                                                        pass
-
-                st.session_state.query_cache[cache_key] = result
-
-            st.session_state[f"{prefix}_messages"].append(
-                {"role": "assistant", "content": result or ""}
-            )
-
-with bottom():
+                        render_article_preview(relevant_chunks)
     st.caption("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection")
