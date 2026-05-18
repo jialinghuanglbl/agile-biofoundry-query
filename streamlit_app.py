@@ -525,6 +525,41 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
     return context, cited_docs
 
 
+def render_article_preview(relevant_chunks):
+    if not relevant_chunks:
+        st.info("No preview available for the current query.")
+        return
+
+    top_chunk = relevant_chunks[0]
+    title = top_chunk.get('doc_title', 'Untitled')
+    page = top_chunk.get('page')
+    timestamp = top_chunk.get('timestamp')
+    similarity = top_chunk.get('similarity', 0.0)
+
+    meta_parts = [f"Source: {title}"]
+    if page:
+        meta_parts.append(f"Page {page}")
+    if timestamp:
+        meta_parts.append(str(timestamp))
+    meta_parts.append(f"Relevance: {similarity:.1%}")
+
+    st.subheader("Article Preview")
+    st.caption(" · ".join(meta_parts))
+
+    preview_doc_id = top_chunk.get('doc_id')
+    preview_chunks = [chunk for chunk in relevant_chunks if chunk.get('doc_id') == preview_doc_id]
+    preview_texts = [chunk.get('text', '').strip() for chunk in preview_chunks if chunk.get('text')]
+    preview_text = "\n\n---\n\n".join(preview_texts) if preview_texts else top_chunk.get('text', '')
+
+    st.text_area(
+        "Preview",
+        value=preview_text,
+        height=320,
+        key=f"preview_{preview_doc_id}",
+        disabled=True
+    )
+
+
 def remove_sources_block(text: str) -> str:
     # Remove any model-generated trailing sources block to prevent duplication.
     import re
@@ -894,4 +929,6 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                         result = (result or "") + sources
 
                         render_article_preview(relevant_chunks)
+
+with bottom():
     st.caption("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection")
