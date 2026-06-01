@@ -579,6 +579,37 @@ def render_article_preview(relevant_chunks):
         else:
             preview_sections.append(chunk.get('text', '').strip())
 
+    def _extract_image_data(image_meta):
+        if isinstance(image_meta, dict):
+            return image_meta.get('data') or image_meta.get('url') or image_meta.get('src')
+        if isinstance(image_meta, str):
+            return image_meta
+        return None
+
+    preview_images = []
+    for chunk in preview_chunks:
+        for image_meta in (chunk.get('chunk_image_urls') or chunk.get('doc_image_urls') or []):
+            image_data = _extract_image_data(image_meta)
+            if image_data:
+                preview_images.append((image_data, image_meta))
+        if preview_images:
+            break
+
+    if preview_images:
+        st.subheader("Preview Image")
+        image_data, image_meta = preview_images[0]
+        if isinstance(image_data, str):
+            try:
+                st.image(image_data, use_column_width=True)
+            except Exception:
+                st.caption("Could not render the preview image.")
+        else:
+            st.caption("Preview image data unavailable.")
+
+        if len(preview_images) > 1:
+            st.caption(f"{len(preview_images)} images available; showing first.")
+        return
+
     preview_text = "\n\n---\n\n".join(preview_sections).strip()
     if not preview_text:
         preview_text = top_chunk.get('text', '').strip() or "No preview text available."
