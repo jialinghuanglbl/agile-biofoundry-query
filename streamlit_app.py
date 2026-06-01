@@ -71,39 +71,40 @@ def extract_pdf_text(pdf_content):
         return f"Error extracting PDF text: {str(e)}"
 
 
-def extract_pdf_images(pdf_content, max_images: int = 3):
-    """Extract embedded images from PDF using PyMuPDF (fitz)."""
+def extract_pdf_images(pdf_content, max_images: int = 20, max_pages: int = None):
+    """Extract PDF images by page scanning, embedded objects, and image blocks."""
     if not FITZ_AVAILABLE:
         return []
 
     try:
         pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
         images_data = []
-        seen_xrefs = set()
+        seen_keys = set()
 
-        for page_num in range(len(pdf_doc)):
+        max_pages = min(len(pdf_doc), max_pages) if isinstance(max_pages, int) else len(pdf_doc)
+
+        for page_num in range(max_pages):
             if len(images_data) >= max_images:
                 break
 
             page = pdf_doc[page_num]
-            image_list = page.get_images(full=True)
+            page_key_prefix = f"page_{page_num + 1}"
 
-            for img_index in image_list:
+            # Extract explicit embedded images first.
+            for img_index in page.get_images(full=True):
                 if len(images_data) >= max_images:
                     break
-
                 xref = img_index[0]
-                if xref in seen_xrefs:
+                key = f"xref_{xref}"
+                if key in seen_keys:
                     continue
-                seen_xrefs.add(xref)
-
+                seen_keys.add(key)
                 try:
                     pix = fitz.Pixmap(pdf_doc, xref)
                     if pix.n - pix.alpha < 4:
                         timage = fitz.Pixmap(fitz.csRGB, pix)
                     else:
                         timage = pix
-
                     img_bytes = timage.tobytes("png")
                     b64_img = base64.b64encode(img_bytes).decode('utf-8')
                     images_data.append({
@@ -115,6 +116,44 @@ def extract_pdf_images(pdf_content, max_images: int = 3):
                     })
                 except Exception:
                     continue
+
+            if len(images_data) >= max_images:
+                continue
+
+            # Render the page and capture inline image blocks.
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
+            except Exception:
+                continue
+
+            for block in page.get_text("dict").get("blocks", []):
+                if len(images_data) >= max_images:
+                    break
+                if block.get("type") != 1:
+                    continue
+                bbox = block.get("bbox", [])
+                if len(bbox) != 4:
+                    continue
+                x0, y0, x1, y1 = [int(v * 2) for v in bbox]
+                if x1 - x0 < 60 or y1 - y0 < 60:
+                    continue
+                key = f"{page_key_prefix}_{x0}_{y0}_{x1}_{y1}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                region = pil_img.crop((max(0, x0 - 5), max(0, y0 - 5), min(pil_img.width, x1 + 5), min(pil_img.height, y1 + 5)))
+                caption = _extract_caption_from_page(page, bbox, zoom=2)
+                buffer = io.BytesIO()
+                region.save(buffer, format="PNG")
+                b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                images_data.append({
+                    'data': f"data:image/png;base64,{b64_img}",
+                    'page': page_num + 1,
+                    'source': 'block',
+                    'classification': 'embedded',
+                    'caption': caption or f"Page {page_num + 1} image block"
+                })
 
         pdf_doc.close()
         return images_data
@@ -641,18 +680,28 @@ def render_article_preview(relevant_chunks):
             break
 
     if preview_images:
-        st.subheader("Preview Image")
-        image_data, image_meta = preview_images[0]
-        if isinstance(image_data, str):
-            try:
-                st.image(image_data, use_column_width=True)
-            except Exception:
-                st.caption("Could not render the preview image.")
-        else:
-            st.caption("Preview image data unavailable.")
+        st.subheader("Preview Images")
+        display_images = preview_images[:2]
+        cols = st.columns(len(display_images))
 
-        if len(preview_images) > 1:
-            st.caption(f"{len(preview_images)} images available; showing first.")
+        for col, (image_data, image_meta) in zip(cols, display_images):
+            with col:
+                if isinstance(image_data, str):
+                    try:
+                        st.image(image_data, use_column_width=True)
+                    except Exception:
+                        st.caption("Could not render the preview image.")
+                else:
+                    st.caption("Preview image data unavailable.")
+
+                caption = ""
+                if isinstance(image_meta, dict):
+                    caption = image_meta.get('caption', '') or image_meta.get('classification', '') or image_meta.get('source', '')
+                if caption:
+                    st.caption(caption)
+
+        if len(preview_images) > len(display_images):
+            st.caption(f"{len(preview_images)} images available; showing first {len(display_images)}.")
         return
 
     preview_text = "\n\n---\n\n".join(preview_sections).strip()
@@ -879,7 +928,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                                         resp = requests.get(child_file_url, timeout=15)
                                                         if resp.status_code == 200:
                                                             text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                                            pdf_images = detect_colorful_rectangles(resp.content, max_images=3)
+                                                            pdf_images = extract_pdf_images(resp.content, max_images=20)
                                                             page_previews = extract_pdf_page_previews(resp.content, max_pages=6)
                                                             image_urls.extend(pdf_images)
                                                             image_urls.extend(page_previews)
@@ -908,7 +957,7 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                             resp = requests.get(file_url, timeout=15)
                                             if resp.status_code == 200:
                                                 text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                                pdf_images = detect_colorful_rectangles(resp.content, max_images=3)
+                                                pdf_images = extract_pdf_images(resp.content, max_images=20)
                                                 page_previews = extract_pdf_page_previews(resp.content, max_pages=6)
                                                 image_urls.extend(pdf_images)
                                                 image_urls.extend(page_previews)
