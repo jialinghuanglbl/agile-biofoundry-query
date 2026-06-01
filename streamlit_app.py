@@ -436,27 +436,37 @@ def render_article_preview(relevant_chunks, show_debug=True):
         else:
             preview_sections.append(chunk.get('text', '').strip())
  
-    # Try to fetch and display the actual PDF page from Zotero
-    debug_info.append(f"[DEBUG] Attempting to fetch PDF page: page={page}, doc_id={preview_doc_id}")
-    print(f"[DEBUG] Attempting to fetch PDF page: page={page}, doc_id={preview_doc_id}", flush=True)
-    sys.stdout.flush()
+    # Try to fetch and display the actual PDF page from Zotero.
+    # If no specific page number was found (old cached data without [PAGE:N]
+    # sentinels), fall back to page 1 so we always show *something* visual
+    # rather than dropping through to the text fallback.
+    chunk_page_raw = top_chunk.get('chunk_page')
+    debug_info.append(f"[DEBUG] chunk_page (raw from index): {chunk_page_raw}")
+    print(f"[DEBUG] chunk_page (raw from index): {chunk_page_raw}", flush=True)
  
-    if page and preview_doc_id:
+    if preview_doc_id:
         try:
-            page_num = int(page)
-            debug_info.append(f"[DEBUG] Calling fetch_pdf_page_from_zotero with doc_id={preview_doc_id}, page={page_num}")
-            print(f"[DEBUG] Calling fetch_pdf_page_from_zotero with doc_id={preview_doc_id}, page={page_num}", flush=True)
+            # Use the resolved page if available, otherwise default to 1.
+            page_num = int(page) if page else 1
+            fallback_label = "" if page else " (no page found — showing page 1)"
+            debug_info.append(f"[DEBUG] Calling fetch_pdf_page_from_zotero: doc_id={preview_doc_id}, page={page_num}{fallback_label}")
+            print(f"[DEBUG] Calling fetch_pdf_page_from_zotero: doc_id={preview_doc_id}, page={page_num}{fallback_label}", flush=True)
             sys.stdout.flush()
+ 
             page_image = fetch_pdf_page_from_zotero(preview_doc_id, page_num)
             debug_info.append(f"[DEBUG] Got page_image back: {len(page_image) if page_image else 0} chars")
             print(f"[DEBUG] Got page_image back: {len(page_image) if page_image else 0} chars", flush=True)
             sys.stdout.flush()
+ 
             if page_image:
                 st.subheader("Source Page Preview")
                 st.image(page_image, use_column_width=True)
-                st.caption(f"Page {page_num} from {title}")
-                debug_info.append(f"[DEBUG] Successfully displayed PDF page")
-                print(f"[DEBUG] Successfully displayed PDF page", flush=True)
+                caption_text = f"Page {page_num} from {title}"
+                if not page:
+                    caption_text += " — rebuild the index to get the exact matched page"
+                st.caption(caption_text)
+                debug_info.append(f"[DEBUG] Successfully displayed PDF page {page_num}")
+                print(f"[DEBUG] Successfully displayed PDF page {page_num}", flush=True)
                 sys.stdout.flush()
                 if show_debug:
                     with st.expander("Debug Info"):
@@ -464,8 +474,8 @@ def render_article_preview(relevant_chunks, show_debug=True):
                             st.code(line)
                 return
             else:
-                debug_info.append(f"[DEBUG] page_image is empty, falling back to text")
-                print(f"[DEBUG] page_image is empty, falling back to text", flush=True)
+                debug_info.append(f"[DEBUG] page_image is empty, falling back to text/image metadata")
+                print(f"[DEBUG] page_image is empty, falling back to text/image metadata", flush=True)
                 sys.stdout.flush()
         except Exception as e:
             debug_info.append(f"[ERROR] Could not fetch PDF page preview: {str(e)}")
@@ -474,8 +484,8 @@ def render_article_preview(relevant_chunks, show_debug=True):
             traceback.print_exc()
             sys.stdout.flush()
     else:
-        debug_info.append(f"[DEBUG] Skipping PDF fetch: page={page}, preview_doc_id={preview_doc_id}")
-        print(f"[DEBUG] Skipping PDF fetch: page={page}, preview_doc_id={preview_doc_id}", flush=True)
+        debug_info.append(f"[DEBUG] No doc_id — cannot fetch PDF page")
+        print(f"[DEBUG] No doc_id — cannot fetch PDF page", flush=True)
         sys.stdout.flush()
  
     # Fallback: try to show preview images from stored metadata
@@ -682,6 +692,31 @@ with st.sidebar:
                         "Download", json.dumps(export_data, indent=2),
                         f"{collection_key}_documents.json", "application/json"
                     )
+ 
+            # Rebuild Index: clears the on-disk chunk cache and re-indexes
+            # already-stored article text. Run this after deploying the
+            # [PAGE:N] sentinel fix so chunks get correct page numbers without
+            # re-downloading everything from Zotero.
+            st.divider()
+            if st.button(
+                "\U0001f504 Rebuild Index",
+                key=f"rebuild_idx_{collection_key}",
+                use_container_width=True,
+                help="Re-chunks and re-indexes stored articles. Use after updating the app to pick up [PAGE:N] page markers.",
+            ):
+                with st.spinner("Rebuilding index\u2026"):
+                    invalidate_index(collection_key)
+                    documents, doc_ids_fresh, doc_metadata_fresh = get_all_articles(collection_key)
+                    st.session_state[f"{prefix}_documents"]    = documents
+                    st.session_state[f"{prefix}_doc_ids"]      = doc_ids_fresh
+                    st.session_state[f"{prefix}_doc_metadata"] = doc_metadata_fresh
+                    success = _build_index_for_collection(collection_key)
+                    st.session_state["_indexes_bootstrapped"] = True
+                if success:
+                    st.success(f"Index rebuilt for {doc_count} documents.")
+                else:
+                    st.warning("No documents found to index. Load from Zotero first.")
+                st.rerun()
  
  
 # ==================== MAIN TABS ====================
