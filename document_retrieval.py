@@ -129,16 +129,14 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
  
  
 def extract_page_number(text: str) -> Optional[str]:
-    # FIX: Match the structured [PAGE:N] sentinel embedded by extract_pdf_text first.
-    # This is the most reliable signal since we control the format.
+    # Prefer the structured [PAGE:N] sentinel embedded by extract_pdf_text.
     match = re.search(r"\[PAGE:(\d+)\]", text)
     if match:
         page_num = match.group(1)
         print(f"[DEBUG extract_page_number] Found structured sentinel PAGE:{page_num}")
         return page_num
  
-    # Fallback: prose page references in documents we didn't extract ourselves
-    # (e.g. abstracts or manually entered text that mentions a page number).
+    # Fallback: prose page references
     match = re.search(r"\b(?:Page|page|Pg|pg|pp)\.?\s*(\d+)\b", text)
     if match:
         page_num = match.group(1)
@@ -207,10 +205,8 @@ def create_chunked_documents(
 ) -> Tuple[List[Dict], List[int]]:
     """
     Chunk all documents and compute per-chunk summaries.
-    Uses a single shared TF-IDF vectorizer fitted on all chunk texts
-    to avoid the cost of re-fitting a vectorizer for every individual chunk.
+    Uses a single shared TF-IDF vectorizer fitted on all chunk texts.
     """
-    # First pass: collect all raw chunks
     raw_chunks = []
     raw_doc_id_mapping = []
  
@@ -260,7 +256,6 @@ def create_chunked_documents(
     if not raw_chunks:
         return [], []
  
-    # Fit a single vectorizer across all chunk texts for summarization
     all_texts = [c['text'] for c in raw_chunks]
     try:
         shared_vec = TfidfVectorizer(stop_words='english', max_features=1000)
@@ -268,7 +263,6 @@ def create_chunked_documents(
     except Exception:
         shared_vec = None
  
-    # Second pass: compute summaries using the shared vectorizer
     chunks_with_metadata = []
     doc_chunk_counts: Dict[str, int] = {}
  
@@ -351,11 +345,8 @@ def retrieve_relevant_chunks(
             chunk['timestamp'] = ts.group(0) if ts else None
             chunk['page'] = None
         else:
-            # FIX: Prefer the page number already extracted and stored during
-            # indexing (chunk_page). This was computed when the [PAGE:N]
-            # sentinel was still present in the raw chunk text. Re-parsing at
-            # query time often fails because the sentinel may have been trimmed
-            # or the chunk was split at a boundary that lost it.
+            # Prefer chunk_page (set at index time from [PAGE:N] sentinel).
+            # Fall back to re-parsing the raw chunk text only if missing.
             chunk['page'] = chunk.get('chunk_page') or extract_page_number(chunk['text'])
             if chunk['page']:
                 print(f"[DEBUG retrieve_relevant_chunks] Set chunk page to: {chunk['page']}")

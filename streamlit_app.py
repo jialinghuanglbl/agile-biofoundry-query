@@ -10,7 +10,6 @@ import json
 import hashlib
 import base64
 import re
-from streamlit_extras.bottom_container import bottom
  
 try:
     import faiss
@@ -53,7 +52,7 @@ COLLECTIONS = [
 ]
  
 SIDEBAR_PAGE_SIZE = 10   # documents rendered per page in sidebar
-MAX_CONTEXT_CHARS = 800  # max chars per chunk sent to Groq
+MAX_CONTEXT_CHARS = 800  # max chars per chunk sent to LLM
  
  
 # ==================== HELPERS ====================
@@ -63,7 +62,7 @@ def extract_pdf_text(pdf_content):
         text = ""
         for i, page in enumerate(pdf_reader.pages, start=1):
             page_text = page.extract_text() or ""
-            # FIX: Sentinel placed at END of each page's text so it stays
+            # Sentinel placed at END of each page's text so it stays
             # attached to the content in the same chunk rather than being
             # split off as an isolated token at the start of the next chunk.
             text += page_text.strip() + f" [PAGE:{i}] "
@@ -72,32 +71,40 @@ def extract_pdf_text(pdf_content):
         return f"Error extracting PDF text: {str(e)}"
  
  
-def extract_pdf_page_previews(pdf_content, max_pages: int = 6, zoom: float = 1.5):
-    """Render PDF pages as preview images for chunk/page association."""
-    if not FITZ_AVAILABLE:
+def extract_pdf_page_previews(pdf_content: bytes, zoom: float = 1.5):
+    """
+    Render ALL PDF pages as base64 PNG images for storage at ingest time.
+    Each entry is keyed by page number (string) so render_article_preview
+    can do an O(1) lookup by chunk_page instead of scanning.
+ 
+    FIX: removed max_pages cap so every page is available for preview.
+         page value is now a string to match chunk_page strings from
+         extract_page_number().
+    """
+    if not FITZ_AVAILABLE or not IMAGE_PROCESSING_AVAILABLE:
         return []
  
     try:
-        pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
+        pdf_doc = fitz.open(stream=pdf_content, filetype="pdf")
         previews = []
-        for page_num in range(min(len(pdf_doc), max_pages)):
+        total = len(pdf_doc)
+        for page_num in range(total):
             page = pdf_doc[page_num]
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
-            buffer = io.BytesIO()
-            Image.open(io.BytesIO(pix.tobytes("png"))).save(buffer, format="PNG")
-            b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            buf = io.BytesIO()
+            Image.open(io.BytesIO(pix.tobytes("png"))).save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             previews.append({
-                'data': f"data:image/png;base64,{b64_img}",
-                'page': page_num + 1,
-                'source': 'preview',
-                'classification': 'page_preview',
-                'caption': f"Page {page_num + 1} preview"
+                "data": f"data:image/png;base64,{b64}",
+                "page": str(page_num + 1),   # string — matches chunk_page strings
+                "source": "preview",
+                "classification": "page_preview",
+                "caption": f"Page {page_num + 1} of {total}",
             })
- 
         pdf_doc.close()
         return previews
     except Exception as e:
-        print(f"Error extracting page previews: {str(e)}")
+        print(f"[ERROR] extract_pdf_page_previews: {e}")
         return []
  
  
@@ -125,8 +132,11 @@ def _safe_secret(name: str, default: str = "") -> str:
  
 def fetch_pdf_page_from_zotero(zotero_id: str, page_num: int, zoom: float = 1.5) -> str:
     """
-    Fetch a specific page from a Zotero item's PDF attachment and render it as a base64 image.
-    Returns the base64 data URI or empty string on failure.
+    Fetch a specific page from a Zotero item's PDF attachment and render it
+    as a base64 data URI.  Returns empty string on any failure.
+ 
+    FIX: added allow_redirects=True to both requests.get calls — Zotero's
+         API sometimes returns 302 to the actual cloud storage URL.
     """
     print(f"[DEBUG] fetch_pdf_page_from_zotero called with zotero_id={zotero_id}, page_num={page_num}")
  
@@ -145,31 +155,34 @@ def fetch_pdf_page_from_zotero(zotero_id: str, page_num: int, zoom: float = 1.5)
             print("[DEBUG] Missing Zotero credentials")
             return ""
  
-        # Try to fetch PDF from attachment item first
         file_url = (
             f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{zotero_id}/file"
             f"?key={zotero_api_key}"
         )
         print(f"[DEBUG] Fetching PDF from URL: {file_url[:80]}...")
  
-        resp = requests.get(file_url, timeout=15)
+        # FIX: allow_redirects=True follows 302 redirects to cloud storage
+        resp = requests.get(file_url, timeout=15, allow_redirects=True)
         print(f"[DEBUG] First request status: {resp.status_code}")
  
         if resp.status_code != 200:
-            # Try to get PDF from children if this is a parent item
             print(f"[DEBUG] Trying children of {zotero_id}")
             try:
                 api = zotero.Zotero(zotero_library_id, zotero_library_type, zotero_api_key)
                 children = api.children(zotero_id)
                 print(f"[DEBUG] Found {len(children)} children")
                 for child in children:
-                    if child['data'].get('itemType') == 'attachment' and child['data'].get('contentType') == 'application/pdf':
+                    if (
+                        child['data'].get('itemType') == 'attachment'
+                        and child['data'].get('contentType') == 'application/pdf'
+                    ):
                         print(f"[DEBUG] Found PDF attachment: {child['key']}")
-                        file_url = (
-                            f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file"
-                            f"?key={zotero_api_key}"
+                        child_file_url = (
+                            f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}"
+                            f"/items/{child['key']}/file?key={zotero_api_key}"
                         )
-                        resp = requests.get(file_url, timeout=15)
+                        # FIX: allow_redirects=True on child request too
+                        resp = requests.get(child_file_url, timeout=15, allow_redirects=True)
                         print(f"[DEBUG] Child request status: {resp.status_code}")
                         if resp.status_code == 200:
                             break
@@ -180,20 +193,18 @@ def fetch_pdf_page_from_zotero(zotero_id: str, page_num: int, zoom: float = 1.5)
             print(f"[DEBUG] Failed to get PDF (status {resp.status_code})")
             return ""
  
-        # Render the specific page
         print(f"[DEBUG] Opening PDF and rendering page {page_num}")
-        pdf_doc = fitz.open(stream=resp.content, file_type="pdf")
+        pdf_doc = fitz.open(stream=resp.content, filetype="pdf")
         print(f"[DEBUG] PDF has {len(pdf_doc)} pages")
  
         if page_num < 1 or page_num > len(pdf_doc):
             print(f"[DEBUG] Page {page_num} out of range, using page 1")
             page_num = 1
  
-        page = pdf_doc[page_num - 1]  # Convert to 0-indexed
+        page = pdf_doc[page_num - 1]
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
         print(f"[DEBUG] Rendered pixmap: {pix.width}x{pix.height}")
  
-        # Convert to PNG and encode to base64
         img_buffer = io.BytesIO()
         Image.open(io.BytesIO(pix.tobytes("png"))).save(img_buffer, format="PNG")
         b64_img = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
@@ -334,7 +345,6 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
         context_parts.append(f"\n**Source: {title}**")
         for i, chunk in enumerate(chunks, 1):
             text = chunk.get('summary') if use_summaries and chunk.get('summary') else chunk['text']
-            # Cap here — reduces tokens sent to Groq significantly
             text = text[:MAX_CONTEXT_CHARS]
             notes = []
             if chunk.get('page'):
@@ -374,7 +384,6 @@ def render_article_preview(relevant_chunks, show_debug=True):
  
     debug_info.append(f"[DEBUG] render_article_preview called with {len(relevant_chunks) if relevant_chunks else 0} chunks")
     print(f"[DEBUG] render_article_preview called with {len(relevant_chunks) if relevant_chunks else 0} chunks", flush=True)
-    sys.stdout.flush()
  
     if not relevant_chunks:
         st.info("No preview available for the current query.")
@@ -392,7 +401,6 @@ def render_article_preview(relevant_chunks, show_debug=True):
  
     debug_info.append(f"[DEBUG] Extracted: title={title}, page={page}, preview_doc_id={preview_doc_id}, timestamp={timestamp}")
     print(f"[DEBUG] Extracted: title={title}, page={page}, preview_doc_id={preview_doc_id}, timestamp={timestamp}", flush=True)
-    sys.stdout.flush()
  
     meta_parts = [f"Source: {title}"]
     if page:
@@ -436,59 +444,102 @@ def render_article_preview(relevant_chunks, show_debug=True):
         else:
             preview_sections.append(chunk.get('text', '').strip())
  
-    # Try to fetch and display the actual PDF page from Zotero.
-    # If no specific page number was found (old cached data without [PAGE:N]
-    # sentinels), fall back to page 1 so we always show *something* visual
-    # rather than dropping through to the text fallback.
     chunk_page_raw = top_chunk.get('chunk_page')
     debug_info.append(f"[DEBUG] chunk_page (raw from index): {chunk_page_raw}")
     print(f"[DEBUG] chunk_page (raw from index): {chunk_page_raw}", flush=True)
  
     if preview_doc_id:
+        # ── Step 1: check stored page renders (free, no network call) ────────
+        # At ingest time extract_pdf_page_previews() stores every page as a
+        # base64 PNG in doc_image_urls with source="preview" and page=str(N).
+        # Look for an exact match on chunk page before touching the network.
+        stored_page_image = None
+        target_page = str(page) if page else None
+        all_doc_images = top_chunk.get("doc_image_urls") or []
+ 
+        debug_info.append(f"[DEBUG] Searching {len(all_doc_images)} stored images for page {target_page}")
+        print(f"[DEBUG] Searching {len(all_doc_images)} stored images for page {target_page}", flush=True)
+ 
+        if target_page:
+            for img_meta in all_doc_images:
+                if (
+                    isinstance(img_meta, dict)
+                    and img_meta.get("source") == "preview"
+                    and str(img_meta.get("page", "")) == target_page
+                ):
+                    stored_page_image = img_meta.get("data")
+                    debug_info.append(f"[DEBUG] Found stored page render for page {target_page}")
+                    print(f"[DEBUG] Found stored page render for page {target_page}", flush=True)
+                    break
+ 
+        # No exact page match — fall back to stored page 1
+        if not stored_page_image:
+            for img_meta in all_doc_images:
+                if (
+                    isinstance(img_meta, dict)
+                    and img_meta.get("source") == "preview"
+                    and str(img_meta.get("page", "")) == "1"
+                ):
+                    stored_page_image = img_meta.get("data")
+                    debug_info.append(f"[DEBUG] No page {target_page} stored, using stored page 1 fallback")
+                    print(f"[DEBUG] No page {target_page} stored, using stored page 1 fallback", flush=True)
+                    break
+ 
+        if stored_page_image:
+            st.subheader("Source Page Preview")
+            st.image(stored_page_image, use_container_width=True)
+            caption = f"Page {target_page or '1'} from {title}"
+            if not page:
+                caption += " — rebuild the index to get the exact matched page"
+            st.caption(caption)
+            debug_info.append(f"[DEBUG] Displayed stored page render")
+            print(f"[DEBUG] Displayed stored page render", flush=True)
+            if show_debug:
+                with st.expander("Debug Info"):
+                    for line in debug_info:
+                        st.code(line)
+            return
+ 
+        # ── Step 2: try Zotero API as last resort ─────────────────────────────
+        # This path is hit only when the document was loaded before the
+        # all-pages preview fix was applied (old ingest, no stored renders).
         try:
-            # Use the resolved page if available, otherwise default to 1.
             page_num = int(page) if page else 1
             fallback_label = "" if page else " (no page found — showing page 1)"
             debug_info.append(f"[DEBUG] Calling fetch_pdf_page_from_zotero: doc_id={preview_doc_id}, page={page_num}{fallback_label}")
             print(f"[DEBUG] Calling fetch_pdf_page_from_zotero: doc_id={preview_doc_id}, page={page_num}{fallback_label}", flush=True)
-            sys.stdout.flush()
  
             page_image = fetch_pdf_page_from_zotero(preview_doc_id, page_num)
             debug_info.append(f"[DEBUG] Got page_image back: {len(page_image) if page_image else 0} chars")
             print(f"[DEBUG] Got page_image back: {len(page_image) if page_image else 0} chars", flush=True)
-            sys.stdout.flush()
  
             if page_image:
                 st.subheader("Source Page Preview")
-                st.image(page_image, use_column_width=True)
+                st.image(page_image, use_container_width=True)
                 caption_text = f"Page {page_num} from {title}"
                 if not page:
                     caption_text += " — rebuild the index to get the exact matched page"
                 st.caption(caption_text)
-                debug_info.append(f"[DEBUG] Successfully displayed PDF page {page_num}")
-                print(f"[DEBUG] Successfully displayed PDF page {page_num}", flush=True)
-                sys.stdout.flush()
+                debug_info.append(f"[DEBUG] Successfully displayed PDF page {page_num} via Zotero API")
+                print(f"[DEBUG] Successfully displayed PDF page {page_num} via Zotero API", flush=True)
                 if show_debug:
                     with st.expander("Debug Info"):
                         for line in debug_info:
                             st.code(line)
                 return
             else:
-                debug_info.append(f"[DEBUG] page_image is empty, falling back to text/image metadata")
-                print(f"[DEBUG] page_image is empty, falling back to text/image metadata", flush=True)
-                sys.stdout.flush()
+                debug_info.append(f"[DEBUG] Zotero API also returned empty — falling back to text/image metadata")
+                print(f"[DEBUG] Zotero API also returned empty — falling back to text/image metadata", flush=True)
         except Exception as e:
             debug_info.append(f"[ERROR] Could not fetch PDF page preview: {str(e)}")
             print(f"[ERROR] Could not fetch PDF page preview: {str(e)}", flush=True)
             import traceback
             traceback.print_exc()
-            sys.stdout.flush()
     else:
         debug_info.append(f"[DEBUG] No doc_id — cannot fetch PDF page")
         print(f"[DEBUG] No doc_id — cannot fetch PDF page", flush=True)
-        sys.stdout.flush()
  
-    # Fallback: try to show preview images from stored metadata
+    # ── Step 3: fallback — show embedded/heuristic images from metadata ───────
     def _extract_image_data(image_meta):
         if isinstance(image_meta, dict):
             return image_meta.get('data') or image_meta.get('url') or image_meta.get('src')
@@ -499,6 +550,9 @@ def render_article_preview(relevant_chunks, show_debug=True):
     preview_images = []
     for chunk in preview_chunks:
         for image_meta in (chunk.get('chunk_image_urls') or chunk.get('doc_image_urls') or []):
+            # Skip page_preview entries here — they were handled above
+            if isinstance(image_meta, dict) and image_meta.get('source') == 'preview':
+                continue
             image_data = _extract_image_data(image_meta)
             if image_data:
                 preview_images.append((image_data, image_meta))
@@ -514,7 +568,7 @@ def render_article_preview(relevant_chunks, show_debug=True):
             with col:
                 if isinstance(image_data, str):
                     try:
-                        st.image(image_data, use_column_width=True)
+                        st.image(image_data, use_container_width=True)
                     except Exception:
                         st.caption("Could not render the preview image.")
                 else:
@@ -522,14 +576,23 @@ def render_article_preview(relevant_chunks, show_debug=True):
  
                 caption = ""
                 if isinstance(image_meta, dict):
-                    caption = image_meta.get('caption', '') or image_meta.get('classification', '') or image_meta.get('source', '')
+                    caption = (
+                        image_meta.get('caption', '')
+                        or image_meta.get('classification', '')
+                        or image_meta.get('source', '')
+                    )
                 if caption:
                     st.caption(caption)
  
         if len(preview_images) > len(display_images):
             st.caption(f"{len(preview_images)} images available; showing first {len(display_images)}.")
+        if show_debug:
+            with st.expander("Debug Info"):
+                for line in debug_info:
+                    st.code(line)
         return
  
+    # ── Step 4: last resort — plain text preview ──────────────────────────────
     preview_text = "\n\n---\n\n".join(preview_sections).strip()
     if not preview_text:
         preview_text = top_chunk.get('text', '').strip() or "No preview text available."
@@ -542,10 +605,13 @@ def render_article_preview(relevant_chunks, show_debug=True):
         disabled=True
     )
  
+    if show_debug:
+        with st.expander("Debug Info"):
+            for line in debug_info:
+                st.code(line)
+ 
  
 def remove_sources_block(text: str) -> str:
-    # Remove any model-generated trailing sources block to prevent duplication.
-    import re
     pattern = r"(?s)\n{2}(?:---\n)?\*{0,2}Sources:\*{0,2}.*$"
     return re.sub(pattern, "", text).strip()
  
@@ -693,18 +759,14 @@ with st.sidebar:
                         f"{collection_key}_documents.json", "application/json"
                     )
  
-            # Rebuild Index: clears the on-disk chunk cache and re-indexes
-            # already-stored article text. Run this after deploying the
-            # [PAGE:N] sentinel fix so chunks get correct page numbers without
-            # re-downloading everything from Zotero.
             st.divider()
             if st.button(
-                "\U0001f504 Rebuild Index",
+                "Rebuild Index",
                 key=f"rebuild_idx_{collection_key}",
                 use_container_width=True,
                 help="Re-chunks and re-indexes stored articles. Use after updating the app to pick up [PAGE:N] page markers.",
             ):
-                with st.spinner("Rebuilding index\u2026"):
+                with st.spinner("Rebuilding index…"):
                     invalidate_index(collection_key)
                     documents, doc_ids_fresh, doc_metadata_fresh = get_all_articles(collection_key)
                     st.session_state[f"{prefix}_documents"]    = documents
@@ -771,10 +833,11 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                                 )
                                                 if ctype == 'application/pdf':
                                                     try:
-                                                        resp = requests.get(child_file_url, timeout=15)
+                                                        resp = requests.get(child_file_url, timeout=15, allow_redirects=True)
                                                         if resp.status_code == 200:
                                                             text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                                            page_previews = extract_pdf_page_previews(resp.content, max_pages=6)
+                                                            # FIX: no max_pages cap — store renders for every page
+                                                            page_previews = extract_pdf_page_previews(resp.content)
                                                             image_urls.extend(page_previews)
                                                     except Exception:
                                                         pass
@@ -798,10 +861,11 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
  
                                     if content_type == 'application/pdf':
                                         try:
-                                            resp = requests.get(file_url, timeout=15)
+                                            resp = requests.get(file_url, timeout=15, allow_redirects=True)
                                             if resp.status_code == 200:
                                                 text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                                page_previews = extract_pdf_page_previews(resp.content, max_pages=6)
+                                                # FIX: no max_pages cap — store renders for every page
+                                                page_previews = extract_pdf_page_previews(resp.content)
                                                 image_urls.extend(page_previews)
                                         except Exception:
                                             pass
@@ -950,6 +1014,6 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
  
                         render_article_preview(relevant_chunks)
  
-with bottom():
+with st.bottom():
     st.caption("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection")
  
