@@ -1014,6 +1014,6 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
  
                         render_article_preview(relevant_chunks)
  
-with st.bottom():
+with st.bottom:
     st.caption("Zotero Library Source: https://www.zotero.org/groups/6420515/abpdu_workflow_automation-article_query_tool/collections/LRILZKMS/collection")
  
