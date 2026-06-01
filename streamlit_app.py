@@ -9,6 +9,7 @@ import io
 import json
 import hashlib
 import base64
+import re
 from streamlit_extras.bottom_container import bottom
 
 try:
@@ -120,6 +121,50 @@ def extract_pdf_images(pdf_content, max_images: int = 3):
     except Exception as e:
         print(f"Error extracting images: {str(e)}")
         return []
+
+
+def extract_pdf_page_previews(pdf_content, max_pages: int = 6, zoom: float = 1.5):
+    """Render PDF pages as preview images for chunk/page association."""
+    if not FITZ_AVAILABLE:
+        return []
+
+    try:
+        pdf_doc = fitz.open(stream=pdf_content, file_type="pdf")
+        previews = []
+        for page_num in range(min(len(pdf_doc), max_pages)):
+            page = pdf_doc[page_num]
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            buffer = io.BytesIO()
+            Image.open(io.BytesIO(pix.tobytes("png"))).save(buffer, format="PNG")
+            b64_img = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            previews.append({
+                'data': f"data:image/png;base64,{b64_img}",
+                'page': page_num + 1,
+                'source': 'preview',
+                'classification': 'page_preview',
+                'caption': f"Page {page_num + 1} preview"
+            })
+
+        pdf_doc.close()
+        return previews
+    except Exception as e:
+        print(f"Error extracting page previews: {str(e)}")
+        return []
+
+
+def dedupe_image_urls(image_urls):
+    seen = set()
+    deduped = []
+    for img in image_urls:
+        if isinstance(img, dict):
+            data = img.get('data') or img.get('url') or img.get('src')
+        else:
+            data = str(img)
+        if not data or data in seen:
+            continue
+        seen.add(data)
+        deduped.append(img)
+    return deduped
 
 
 def _extract_caption_from_page(page, bbox, zoom=2):
@@ -834,11 +879,20 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                                         resp = requests.get(child_file_url, timeout=15)
                                                         if resp.status_code == 200:
                                                             text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                                            image_urls = detect_colorful_rectangles(resp.content, max_images=3)
+                                                            pdf_images = detect_colorful_rectangles(resp.content, max_images=3)
+                                                            page_previews = extract_pdf_page_previews(resp.content, max_pages=6)
+                                                            image_urls.extend(pdf_images)
+                                                            image_urls.extend(page_previews)
                                                     except Exception:
                                                         pass
                                                 elif ctype.startswith('image/'):
-                                                    image_urls.append(child_file_url)
+                                                    image_urls.append({
+                                                        'data': child_file_url,
+                                                        'source': 'attachment',
+                                                        'classification': 'embedded',
+                                                        'page': None,
+                                                        'caption': ''
+                                                    })
                                     except Exception:
                                         pass
 
@@ -854,16 +908,22 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                                             resp = requests.get(file_url, timeout=15)
                                             if resp.status_code == 200:
                                                 text = f"{title}\n{extract_pdf_text(resp.content)}"
-                                                image_urls = detect_colorful_rectangles(resp.content, max_images=3)
+                                                pdf_images = detect_colorful_rectangles(resp.content, max_images=3)
+                                                page_previews = extract_pdf_page_previews(resp.content, max_pages=6)
+                                                image_urls.extend(pdf_images)
+                                                image_urls.extend(page_previews)
                                         except Exception:
                                             pass
                                     elif content_type.startswith('image/'):
                                         image_urls.append({
                                             'data': file_url,
-                                            'source': 'embedded',
+                                            'source': 'attachment',
                                             'classification': 'embedded',
                                             'page': None,
+                                            'caption': ''
                                         })
+
+                                image_urls = dedupe_image_urls(image_urls)
 
                                 success, _ = add_article(
                                     zotero_id, text, title, item_type,

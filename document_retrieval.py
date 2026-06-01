@@ -144,6 +144,22 @@ def _caption_matches_chunk(caption: str, chunk_text: str) -> bool:
     return matches >= 2
 
 
+def _figure_reference_matches_chunk(caption: str, chunk_text: str) -> bool:
+    if not caption or not chunk_text:
+        return False
+    caption_lower = caption.lower()
+    chunk_lower = chunk_text.lower()
+    figure_in_caption = re.search(r"\bfig(?:ure)?\.?\s*(\d+)\b", caption_lower)
+    if figure_in_caption:
+        figure_label = figure_in_caption.group(0)
+        if figure_label in chunk_lower:
+            return True
+    figure_in_chunk = re.search(r"\bfig(?:ure)?\.?\s*(\d+)\b", chunk_lower)
+    if figure_in_chunk and figure_in_chunk.group(0) in caption_lower:
+        return True
+    return False
+
+
 def summarize_chunk(text: str, max_sentences: int = 1, _vectorizer: TfidfVectorizer = None) -> str:
     """
     Summarize a chunk to its most informative sentence.
@@ -203,6 +219,12 @@ def create_chunked_documents(
                     continue
                 caption = str(image_meta.get('caption', '')).strip()
                 if _caption_matches_chunk(caption, chunk_text):
+                    chunk_image_urls.append(image_meta)
+                    continue
+                if _figure_reference_matches_chunk(caption, chunk_text):
+                    chunk_image_urls.append(image_meta)
+                    continue
+                if caption and caption.lower() in chunk_text.lower():
                     chunk_image_urls.append(image_meta)
 
             raw_chunks.append({
