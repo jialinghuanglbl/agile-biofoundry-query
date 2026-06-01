@@ -125,7 +125,10 @@ def fetch_pdf_page_from_zotero(zotero_id: str, page_num: int, zoom: float = 1.5)
     Fetch a specific page from a Zotero item's PDF attachment and render it as a base64 image.
     Returns the base64 data URI or empty string on failure.
     """
+    print(f"[DEBUG] fetch_pdf_page_from_zotero called with zotero_id={zotero_id}, page_num={page_num}")
+    
     if not FITZ_AVAILABLE or not IMAGE_PROCESSING_AVAILABLE:
+        print(f"[DEBUG] FITZ_AVAILABLE={FITZ_AVAILABLE}, IMAGE_PROCESSING_AVAILABLE={IMAGE_PROCESSING_AVAILABLE}")
         return ""
     
     try:
@@ -133,7 +136,10 @@ def fetch_pdf_page_from_zotero(zotero_id: str, page_num: int, zoom: float = 1.5)
         zotero_api_key = _safe_secret("zotero_api_key")
         zotero_library_type = _safe_secret("zotero_library_type", "user")
         
+        print(f"[DEBUG] Secrets: library_id={zotero_library_id[:4]}..., has_key={bool(zotero_api_key)}, type={zotero_library_type}")
+        
         if not zotero_library_id or not zotero_api_key:
+            print("[DEBUG] Missing Zotero credentials")
             return ""
         
         # Try to fetch PDF from attachment item first
@@ -141,45 +147,62 @@ def fetch_pdf_page_from_zotero(zotero_id: str, page_num: int, zoom: float = 1.5)
             f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{zotero_id}/file"
             f"?key={zotero_api_key}"
         )
+        print(f"[DEBUG] Fetching PDF from URL: {file_url[:80]}...")
         
         resp = requests.get(file_url, timeout=15)
+        print(f"[DEBUG] First request status: {resp.status_code}")
+        
         if resp.status_code != 200:
             # Try to get PDF from children if this is a parent item
+            print(f"[DEBUG] Trying children of {zotero_id}")
             try:
                 api = zotero.Zotero(zotero_library_id, zotero_library_type, zotero_api_key)
                 children = api.children(zotero_id)
+                print(f"[DEBUG] Found {len(children)} children")
                 for child in children:
                     if child['data'].get('itemType') == 'attachment' and child['data'].get('contentType') == 'application/pdf':
+                        print(f"[DEBUG] Found PDF attachment: {child['key']}")
                         file_url = (
                             f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file"
                             f"?key={zotero_api_key}"
                         )
                         resp = requests.get(file_url, timeout=15)
+                        print(f"[DEBUG] Child request status: {resp.status_code}")
                         if resp.status_code == 200:
                             break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[DEBUG] Error checking children: {str(e)}")
         
         if resp.status_code != 200:
+            print(f"[DEBUG] Failed to get PDF (status {resp.status_code})")
             return ""
         
         # Render the specific page
+        print(f"[DEBUG] Opening PDF and rendering page {page_num}")
         pdf_doc = fitz.open(stream=resp.content, file_type="pdf")
+        print(f"[DEBUG] PDF has {len(pdf_doc)} pages")
+        
         if page_num < 1 or page_num > len(pdf_doc):
+            print(f"[DEBUG] Page {page_num} out of range, using page 1")
             page_num = 1
         
         page = pdf_doc[page_num - 1]  # Convert to 0-indexed
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        print(f"[DEBUG] Rendered pixmap: {pix.width}x{pix.height}")
         
         # Convert to PNG and encode to base64
         img_buffer = io.BytesIO()
         Image.open(io.BytesIO(pix.tobytes("png"))).save(img_buffer, format="PNG")
         b64_img = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+        print(f"[DEBUG] Encoded base64 image: {len(b64_img)} chars")
         
         pdf_doc.close()
+        print(f"[DEBUG] Successfully created page image")
         return f"data:image/png;base64,{b64_img}"
     except Exception as e:
-        print(f"Error fetching PDF page from Zotero: {str(e)}")
+        print(f"[ERROR] Error fetching PDF page from Zotero: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return ""
 
 
@@ -343,15 +366,22 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
 
 
 def render_article_preview(relevant_chunks):
+    print(f"[DEBUG] render_article_preview called with {len(relevant_chunks) if relevant_chunks else 0} chunks")
+    
     if not relevant_chunks:
         st.info("No preview available for the current query.")
         return
 
     top_chunk = relevant_chunks[0]
+    print(f"[DEBUG] Top chunk keys: {top_chunk.keys()}")
+    
     title = top_chunk.get('doc_title', 'Untitled')
     page = top_chunk.get('page')
     timestamp = top_chunk.get('timestamp')
     similarity = top_chunk.get('similarity', 0.0)
+    preview_doc_id = top_chunk.get('doc_id')
+    
+    print(f"[DEBUG] Title: {title}, Page: {page}, DocID: {preview_doc_id}")
 
     meta_parts = [f"Source: {title}"]
     if page:
@@ -363,7 +393,6 @@ def render_article_preview(relevant_chunks):
     st.subheader("Article Preview")
     st.caption(" · ".join(meta_parts))
 
-    preview_doc_id = top_chunk.get('doc_id')
     same_doc_chunks = [chunk for chunk in relevant_chunks if chunk.get('doc_id') == preview_doc_id]
     same_doc_chunks = sorted(
         same_doc_chunks,
@@ -397,17 +426,26 @@ def render_article_preview(relevant_chunks):
             preview_sections.append(chunk.get('text', '').strip())
 
     # Try to fetch and display the actual PDF page from Zotero
+    print(f"[DEBUG] Attempting to fetch PDF page: page={page}, doc_id={preview_doc_id}")
     if page and preview_doc_id:
         try:
             page_num = int(page)
+            print(f"[DEBUG] Calling fetch_pdf_page_from_zotero with doc_id={preview_doc_id}, page={page_num}")
             page_image = fetch_pdf_page_from_zotero(preview_doc_id, page_num)
+            print(f"[DEBUG] Got page_image back: {len(page_image) if page_image else 0} chars")
             if page_image:
                 st.subheader("Source Page Preview")
                 st.image(page_image, use_column_width=True)
                 st.caption(f"Page {page_num} from {title}")
                 return
+            else:
+                print(f"[DEBUG] page_image is empty")
         except Exception as e:
-            print(f"Could not fetch PDF page preview: {str(e)}")
+            print(f"[ERROR] Could not fetch PDF page preview: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"[DEBUG] Skipping PDF fetch: page={page}, preview_doc_id={preview_doc_id}")
     
     # Fallback: try to show preview images from stored metadata
     def _extract_image_data(image_meta):
@@ -834,12 +872,18 @@ for tab_idx, (tab, col_info) in enumerate(zip(tabs, COLLECTIONS)):
                             status_label = {
                                 'embedded': 'embedded image',
                                 'heuristic': 'heuristic image',
-                                'none': 'no image'
-                            }.get(status, 'no image')
+                                'none': ''
+                            }.get(status, '')
                             if url:
-                                sources += f"- [{title}]({url}) (Relevance: {doc['similarity']:.1%}; {status_label})\n"
+                                if status_label:
+                                    sources += f"- [{title}]({url}) (Relevance: {doc['similarity']:.1%}; {status_label})\n"
+                                else:
+                                    sources += f"- [{title}]({url}) (Relevance: {doc['similarity']:.1%})\n"
                             else:
-                                sources += f"- {title} (Relevance: {doc['similarity']:.1%}; {status_label})\n"
+                                if status_label:
+                                    sources += f"- {title} (Relevance: {doc['similarity']:.1%}; {status_label})\n"
+                                else:
+                                    sources += f"- {title} (Relevance: {doc['similarity']:.1%})\n"
                         st.markdown(sources)
                         result = (result or "") + sources
 
