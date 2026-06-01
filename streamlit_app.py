@@ -120,6 +120,69 @@ def _safe_secret(name: str, default: str = "") -> str:
         return default
 
 
+def fetch_pdf_page_from_zotero(zotero_id: str, page_num: int, zoom: float = 1.5) -> str:
+    """
+    Fetch a specific page from a Zotero item's PDF attachment and render it as a base64 image.
+    Returns the base64 data URI or empty string on failure.
+    """
+    if not FITZ_AVAILABLE or not IMAGE_PROCESSING_AVAILABLE:
+        return ""
+    
+    try:
+        zotero_library_id = _safe_secret("zotero_library_id")
+        zotero_api_key = _safe_secret("zotero_api_key")
+        zotero_library_type = _safe_secret("zotero_library_type", "user")
+        
+        if not zotero_library_id or not zotero_api_key:
+            return ""
+        
+        # Try to fetch PDF from attachment item first
+        file_url = (
+            f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{zotero_id}/file"
+            f"?key={zotero_api_key}"
+        )
+        
+        resp = requests.get(file_url, timeout=15)
+        if resp.status_code != 200:
+            # Try to get PDF from children if this is a parent item
+            try:
+                api = zotero.Zotero(zotero_library_id, zotero_library_type, zotero_api_key)
+                children = api.children(zotero_id)
+                for child in children:
+                    if child['data'].get('itemType') == 'attachment' and child['data'].get('contentType') == 'application/pdf':
+                        file_url = (
+                            f"https://api.zotero.org/{zotero_library_type}s/{zotero_library_id}/items/{child['key']}/file"
+                            f"?key={zotero_api_key}"
+                        )
+                        resp = requests.get(file_url, timeout=15)
+                        if resp.status_code == 200:
+                            break
+            except Exception:
+                pass
+        
+        if resp.status_code != 200:
+            return ""
+        
+        # Render the specific page
+        pdf_doc = fitz.open(stream=resp.content, file_type="pdf")
+        if page_num < 1 or page_num > len(pdf_doc):
+            page_num = 1
+        
+        page = pdf_doc[page_num - 1]  # Convert to 0-indexed
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        
+        # Convert to PNG and encode to base64
+        img_buffer = io.BytesIO()
+        Image.open(io.BytesIO(pix.tobytes("png"))).save(img_buffer, format="PNG")
+        b64_img = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+        
+        pdf_doc.close()
+        return f"data:image/png;base64,{b64_img}"
+    except Exception as e:
+        print(f"Error fetching PDF page from Zotero: {str(e)}")
+        return ""
+
+
 def get_collection_zotero_key(collection_key: str) -> str:
     return _safe_secret(f"zotero_collection_{collection_key}")
 
@@ -333,6 +396,20 @@ def render_article_preview(relevant_chunks):
         else:
             preview_sections.append(chunk.get('text', '').strip())
 
+    # Try to fetch and display the actual PDF page from Zotero
+    if page and preview_doc_id:
+        try:
+            page_num = int(page)
+            page_image = fetch_pdf_page_from_zotero(preview_doc_id, page_num)
+            if page_image:
+                st.subheader("Source Page Preview")
+                st.image(page_image, use_column_width=True)
+                st.caption(f"Page {page_num} from {title}")
+                return
+        except Exception as e:
+            print(f"Could not fetch PDF page preview: {str(e)}")
+    
+    # Fallback: try to show preview images from stored metadata
     def _extract_image_data(image_meta):
         if isinstance(image_meta, dict):
             return image_meta.get('data') or image_meta.get('url') or image_meta.get('src')
