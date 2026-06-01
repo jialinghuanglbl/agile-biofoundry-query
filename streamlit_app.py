@@ -366,14 +366,18 @@ def build_capped_context(relevant_chunks, seen_docs, use_summaries: bool) -> tup
 
 
 def render_article_preview(relevant_chunks):
-    print(f"[DEBUG] render_article_preview called with {len(relevant_chunks) if relevant_chunks else 0} chunks")
+    import sys
+    print(f"[DEBUG] render_article_preview called with {len(relevant_chunks) if relevant_chunks else 0} chunks", flush=True)
+    sys.stdout.flush()
     
     if not relevant_chunks:
         st.info("No preview available for the current query.")
         return
 
     top_chunk = relevant_chunks[0]
-    print(f"[DEBUG] Top chunk keys: {top_chunk.keys()}")
+    print(f"[DEBUG] Top chunk keys: {list(top_chunk.keys())}", flush=True)
+    print(f"[DEBUG] Top chunk content: {top_chunk}", flush=True)
+    sys.stdout.flush()
     
     title = top_chunk.get('doc_title', 'Untitled')
     page = top_chunk.get('page')
@@ -381,7 +385,8 @@ def render_article_preview(relevant_chunks):
     similarity = top_chunk.get('similarity', 0.0)
     preview_doc_id = top_chunk.get('doc_id')
     
-    print(f"[DEBUG] Title: {title}, Page: {page}, DocID: {preview_doc_id}")
+    print(f"[DEBUG] Extracted: title={title}, page={page}, preview_doc_id={preview_doc_id}, timestamp={timestamp}", flush=True)
+    sys.stdout.flush()
 
     meta_parts = [f"Source: {title}"]
     if page:
@@ -426,27 +431,37 @@ def render_article_preview(relevant_chunks):
             preview_sections.append(chunk.get('text', '').strip())
 
     # Try to fetch and display the actual PDF page from Zotero
-    print(f"[DEBUG] Attempting to fetch PDF page: page={page}, doc_id={preview_doc_id}")
+    print(f"[DEBUG] Attempting to fetch PDF page: page={page}, doc_id={preview_doc_id}", flush=True)
+    sys.stdout.flush()
+    
     if page and preview_doc_id:
         try:
             page_num = int(page)
-            print(f"[DEBUG] Calling fetch_pdf_page_from_zotero with doc_id={preview_doc_id}, page={page_num}")
+            print(f"[DEBUG] Calling fetch_pdf_page_from_zotero with doc_id={preview_doc_id}, page={page_num}", flush=True)
+            sys.stdout.flush()
             page_image = fetch_pdf_page_from_zotero(preview_doc_id, page_num)
-            print(f"[DEBUG] Got page_image back: {len(page_image) if page_image else 0} chars")
+            print(f"[DEBUG] Got page_image back: {len(page_image) if page_image else 0} chars", flush=True)
+            sys.stdout.flush()
             if page_image:
                 st.subheader("Source Page Preview")
                 st.image(page_image, use_column_width=True)
                 st.caption(f"Page {page_num} from {title}")
+                print(f"[DEBUG] Successfully displayed PDF page", flush=True)
+                sys.stdout.flush()
                 return
             else:
-                print(f"[DEBUG] page_image is empty")
+                print(f"[DEBUG] page_image is empty, falling back to text", flush=True)
+                sys.stdout.flush()
         except Exception as e:
-            print(f"[ERROR] Could not fetch PDF page preview: {str(e)}")
+            print(f"[ERROR] Could not fetch PDF page preview: {str(e)}", flush=True)
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
     else:
-        print(f"[DEBUG] Skipping PDF fetch: page={page}, preview_doc_id={preview_doc_id}")
+        print(f"[DEBUG] Skipping PDF fetch: page={page}, preview_doc_id={preview_doc_id}", flush=True)
+        sys.stdout.flush()
     
+
     # Fallback: try to show preview images from stored metadata
     def _extract_image_data(image_meta):
         if isinstance(image_meta, dict):

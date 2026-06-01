@@ -130,7 +130,12 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
 
 def extract_page_number(text: str) -> Optional[str]:
     match = re.search(r"\b(?:Page|page|Pg|pg|pp|p)\.?\s*(\d+)\b", text, re.IGNORECASE)
-    return match.group(1) if match else None
+    page_num = match.group(1) if match else None
+    if not page_num:
+        print(f"[DEBUG extract_page_number] NO PAGE FOUND in text: {text[:150]}")
+    else:
+        print(f"[DEBUG extract_page_number] Found page: {page_num}")
+    return page_num
 
 
 def _caption_matches_chunk(caption: str, chunk_text: str) -> bool:
@@ -336,8 +341,10 @@ def retrieve_relevant_chunks(
             chunk['timestamp'] = ts.group(0) if ts else None
             chunk['page'] = None
         else:
-            pg = re.search(r"Page\s+(\d+)", chunk['text'], re.IGNORECASE)
-            chunk['page'] = pg.group(1) if pg else None
+            # Use the extract_page_number function for consistency
+            chunk['page'] = extract_page_number(chunk['text'])
+            if chunk['page']:
+                print(f"[DEBUG retrieve_relevant_chunks] Set chunk page to: {chunk['page']}")
             chunk['timestamp'] = None
 
         relevant_chunks.append(chunk)
