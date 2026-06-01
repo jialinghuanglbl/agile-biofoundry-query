@@ -1,7 +1,7 @@
 """
 Document Retrieval Module
 """
-
+ 
 import re
 import os
 import joblib
@@ -9,7 +9,7 @@ import shutil
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from sklearn.feature_extraction.text import TfidfVectorizer
-
+ 
 try:
     import faiss
     FAISS_AVAILABLE = True
@@ -17,22 +17,22 @@ except ImportError:
     faiss = None
     FAISS_AVAILABLE = False
     print("WARNING: faiss not installed. Run: pip install faiss-cpu")
-
-
+ 
+ 
 def _get_cache_dir(collection_key: str) -> str:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     cache_dir = os.path.join(base_dir, "zotero_cache", collection_key)
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
-
-
+ 
+ 
 def clear_chunk_cache(collection_key: str) -> None:
     """Clear persistent cache when documents change."""
     cache_dir = _get_cache_dir(collection_key)
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir, ignore_errors=True)
-
-
+ 
+ 
 def save_chunk_index(
     chunks: List[Dict],
     doc_id_mapping: List[int],
@@ -47,8 +47,8 @@ def save_chunk_index(
     joblib.dump(doc_id_mapping, os.path.join(cache_dir, "doc_id_mapping.joblib"))
     joblib.dump(vectorizer, os.path.join(cache_dir, "chunk_vectorizer.joblib"))
     faiss.write_index(faiss_index, os.path.join(cache_dir, "faiss_index.bin"))
-
-
+ 
+ 
 def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int], TfidfVectorizer, "faiss.Index"]]:
     if not FAISS_AVAILABLE:
         return None
@@ -56,7 +56,7 @@ def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int
     chunks_path = os.path.join(cache_dir, "chunks.joblib")
     if not os.path.exists(chunks_path):
         return None
-
+ 
     try:
         chunks = joblib.load(chunks_path)
         doc_id_mapping = joblib.load(os.path.join(cache_dir, "doc_id_mapping.joblib"))
@@ -65,15 +65,15 @@ def load_chunk_index(collection_key: str) -> Optional[Tuple[List[Dict], List[int
         return chunks, doc_id_mapping, vectorizer, faiss_index
     except Exception:
         return None
-
-
+ 
+ 
 # ==================== CHUNKING ====================
 def chunk_document(document: str, chunk_size: int = 500, overlap: int = 80) -> List[Dict]:
     sentences = re.split(r'(?<=[.!?])\s+', document)
     chunks = []
     current_chunk = ""
     chunk_start_idx = 0
-
+ 
     for sentence in sentences:
         potential = current_chunk + " " + sentence if current_chunk else sentence
         if len(potential) > chunk_size and current_chunk:
@@ -88,7 +88,7 @@ def chunk_document(document: str, chunk_size: int = 500, overlap: int = 80) -> L
             chunk_start_idx += len(current_chunk) - len(overlap_text)
         else:
             current_chunk = potential
-
+ 
     if current_chunk.strip():
         chunks.append({
             'text': current_chunk.strip(),
@@ -96,26 +96,26 @@ def chunk_document(document: str, chunk_size: int = 500, overlap: int = 80) -> L
             'end': chunk_start_idx + len(current_chunk)
         })
     return chunks
-
-
+ 
+ 
 def is_transcript_doc(document: str, metadata: Dict) -> bool:
     title = metadata.get('title', '').lower()
     abstract = metadata.get('abstract', '').lower()
-
+ 
     if any(kw in (title + abstract) for kw in ['transcript', 'youtube', 'video', 'audio']):
         return True
     if re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", document):
         return True
-
+ 
     lines = [ln.strip() for ln in document.splitlines() if ln.strip()]
     if len(lines) >= 10 and sum(len(ln) for ln in lines) / len(lines) < 100:
         return True
-
+ 
     if len(document) > 30000 or len(lines) > 400:
         return True
     return False
-
-
+ 
+ 
 def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) -> List[Dict]:
     doc = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", document)
     doc = re.sub(r"\s+", " ", doc).strip()
@@ -126,18 +126,28 @@ def chunk_transcript(document: str, chunk_size: int = 400, overlap: int = 80) ->
         if text:
             chunks.append({'text': text, 'start': start, 'end': start + len(text)})
     return chunks
-
-
+ 
+ 
 def extract_page_number(text: str) -> Optional[str]:
-    match = re.search(r"\b(?:Page|page|Pg|pg|pp|p)\.?\s*(\d+)\b", text, re.IGNORECASE)
-    page_num = match.group(1) if match else None
-    if not page_num:
-        print(f"[DEBUG extract_page_number] NO PAGE FOUND in text: {text[:150]}")
-    else:
-        print(f"[DEBUG extract_page_number] Found page: {page_num}")
-    return page_num
-
-
+    # FIX: Match the structured [PAGE:N] sentinel embedded by extract_pdf_text first.
+    # This is the most reliable signal since we control the format.
+    match = re.search(r"\[PAGE:(\d+)\]", text)
+    if match:
+        page_num = match.group(1)
+        print(f"[DEBUG extract_page_number] Found structured sentinel PAGE:{page_num}")
+        return page_num
+ 
+    # Fallback: prose page references in documents we didn't extract ourselves
+    # (e.g. abstracts or manually entered text that mentions a page number).
+    match = re.search(r"\b(?:Page|page|Pg|pg|pp)\.?\s*(\d+)\b", text)
+    if match:
+        page_num = match.group(1)
+        print(f"[DEBUG extract_page_number] Found prose page reference: {page_num}")
+        return page_num
+ 
+    return None
+ 
+ 
 def _caption_matches_chunk(caption: str, chunk_text: str) -> bool:
     if not caption or not chunk_text:
         return False
@@ -147,8 +157,8 @@ def _caption_matches_chunk(caption: str, chunk_text: str) -> bool:
         return False
     matches = sum(1 for word in caption_words[:5] if word in chunk_text_lower)
     return matches >= 2
-
-
+ 
+ 
 def _figure_reference_matches_chunk(caption: str, chunk_text: str) -> bool:
     if not caption or not chunk_text:
         return False
@@ -163,8 +173,8 @@ def _figure_reference_matches_chunk(caption: str, chunk_text: str) -> bool:
     if figure_in_chunk and figure_in_chunk.group(0) in caption_lower:
         return True
     return False
-
-
+ 
+ 
 def summarize_chunk(text: str, max_sentences: int = 1, _vectorizer: TfidfVectorizer = None) -> str:
     """
     Summarize a chunk to its most informative sentence.
@@ -173,7 +183,7 @@ def summarize_chunk(text: str, max_sentences: int = 1, _vectorizer: TfidfVectori
     sentences = re.split(r'(?<=[.!?])\s+', text)
     if len(sentences) <= max_sentences:
         return text.strip()
-
+ 
     try:
         if _vectorizer is not None:
             X = _vectorizer.transform(sentences)
@@ -185,8 +195,8 @@ def summarize_chunk(text: str, max_sentences: int = 1, _vectorizer: TfidfVectori
         return " ".join(sentences[i].strip() for i in sorted(top_idx))
     except Exception:
         return " ".join(sentences[:max_sentences]).strip()
-
-
+ 
+ 
 def create_chunked_documents(
     documents: List[str],
     doc_ids: List[str],
@@ -203,7 +213,7 @@ def create_chunked_documents(
     # First pass: collect all raw chunks
     raw_chunks = []
     raw_doc_id_mapping = []
-
+ 
     for doc_idx, (document, doc_id, metadata) in enumerate(zip(documents, doc_ids, doc_metadata)):
         if is_transcript_doc(document, metadata):
             chunks = chunk_transcript(document, min(400, chunk_size), min(80, overlap))
@@ -211,7 +221,7 @@ def create_chunked_documents(
         else:
             chunks = chunk_document(document, chunk_size, overlap)
             use_summary_sentences = summary_sentences
-
+ 
         for chunk in chunks:
             chunk_text = chunk['text']
             chunk_page = extract_page_number(chunk_text)
@@ -231,7 +241,7 @@ def create_chunked_documents(
                     continue
                 if caption and caption.lower() in chunk_text.lower():
                     chunk_image_urls.append(image_meta)
-
+ 
             raw_chunks.append({
                 'text': chunk['text'],
                 'doc_id': doc_id,
@@ -246,10 +256,10 @@ def create_chunked_documents(
                 'use_summary_sentences': use_summary_sentences,
             })
             raw_doc_id_mapping.append(doc_idx)
-
+ 
     if not raw_chunks:
         return [], []
-
+ 
     # Fit a single vectorizer across all chunk texts for summarization
     all_texts = [c['text'] for c in raw_chunks]
     try:
@@ -257,21 +267,21 @@ def create_chunked_documents(
         shared_vec.fit(all_texts)
     except Exception:
         shared_vec = None
-
+ 
     # Second pass: compute summaries using the shared vectorizer
     chunks_with_metadata = []
     doc_chunk_counts: Dict[str, int] = {}
-
+ 
     for chunk_data in raw_chunks:
         doc_id = chunk_data['doc_id']
         doc_chunk_counts[doc_id] = doc_chunk_counts.get(doc_id, 0)
-
+ 
         summary = summarize_chunk(
             chunk_data['text'],
             chunk_data['use_summary_sentences'],
             _vectorizer=shared_vec
         )
-
+ 
         chunks_with_metadata.append({
             'text': chunk_data['text'],
             'summary': summary,
@@ -287,10 +297,10 @@ def create_chunked_documents(
             'chunk_position': doc_chunk_counts[doc_id],
         })
         doc_chunk_counts[doc_id] += 1
-
+ 
     return chunks_with_metadata, raw_doc_id_mapping
-
-
+ 
+ 
 def retrieve_relevant_chunks(
     query: str,
     vectorizer,
@@ -302,58 +312,62 @@ def retrieve_relevant_chunks(
 ) -> Tuple[List[Dict], Dict]:
     if not FAISS_AVAILABLE or faiss_index is None:
         raise ImportError("FAISS is required but not available. Make sure faiss-cpu is installed.")
-
+ 
     query_vec = vectorizer.transform([query]).toarray().astype('float32')
     faiss.normalize_L2(query_vec)
-
+ 
     ann_k = min(k * 4, len(chunks_with_metadata))
     similarities, indices = faiss_index.search(query_vec, ann_k)
     similarities = similarities.flatten()
     indices = indices.flatten()
-
+ 
     low_relevance_weight = 0.425
     adjusted = []
     for i, idx in enumerate(indices):
         chunk = chunks_with_metadata[idx]
         adj_sim = similarities[i] * low_relevance_weight if chunk.get('low_relevance') else similarities[i]
         adjusted.append((idx, adj_sim))
-
+ 
     adjusted.sort(key=lambda x: x[1], reverse=True)
     candidate_indices = [idx for idx, _ in adjusted[:ann_k]]
-
+ 
     relevant_chunks = []
     seen_docs = {}
     doc_ids_included = set()
-
+ 
     for idx in candidate_indices:
         adj_score = next((s for i, s in adjusted if i == idx), 0)
         if adj_score <= similarity_threshold and len(doc_ids_included) >= 5:
             continue
-
+ 
         chunk = chunks_with_metadata[idx].copy()
         doc_id = chunk['doc_id']
         chunk['similarity'] = float(adj_score)
         chunk['original_doc_index'] = doc_id_mapping[idx]
-
+ 
         doc_type = chunk.get('doc_type', '').lower()
         if doc_type in ['videorecording', 'audiorecording'] or 'transcript' in doc_type:
             ts = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", chunk['text'])
             chunk['timestamp'] = ts.group(0) if ts else None
             chunk['page'] = None
         else:
-            # Use the extract_page_number function for consistency
-            chunk['page'] = extract_page_number(chunk['text'])
+            # FIX: Prefer the page number already extracted and stored during
+            # indexing (chunk_page). This was computed when the [PAGE:N]
+            # sentinel was still present in the raw chunk text. Re-parsing at
+            # query time often fails because the sentinel may have been trimmed
+            # or the chunk was split at a boundary that lost it.
+            chunk['page'] = chunk.get('chunk_page') or extract_page_number(chunk['text'])
             if chunk['page']:
                 print(f"[DEBUG retrieve_relevant_chunks] Set chunk page to: {chunk['page']}")
             chunk['timestamp'] = None
-
+ 
         relevant_chunks.append(chunk)
         doc_ids_included.add(doc_id)
-
+ 
         chunk_images = chunk.get('chunk_image_urls') or []
         doc_images = chunk.get('doc_image_urls', []) or []
         selected_images = chunk_images if chunk_images else doc_images
-
+ 
         def _derive_image_status(images):
             if not images:
                 return 'none'
@@ -364,9 +378,9 @@ def retrieve_relevant_chunks(
             if any(isinstance(img, dict) and img.get('source') == 'preview' for img in images):
                 return 'heuristic'
             return 'heuristic'
-
+ 
         selected_status = _derive_image_status(selected_images)
-
+ 
         if doc_id not in seen_docs:
             seen_docs[doc_id] = {
                 'title': chunk['doc_title'],
@@ -391,16 +405,16 @@ def retrieve_relevant_chunks(
             info['pages'].add(chunk['page'])
         if chunk.get('timestamp'):
             info['timestamps'].add(chunk['timestamp'])
-
+ 
         if len(doc_ids_included) >= 5 and len(relevant_chunks) >= k:
             break
-
+ 
     if len(relevant_chunks) > k:
         relevant_chunks = relevant_chunks[:k]
-
+ 
     return relevant_chunks, seen_docs
-
-
+ 
+ 
 def format_context_from_chunks(
     relevant_chunks: List[Dict],
     seen_docs: Dict,
@@ -410,7 +424,7 @@ def format_context_from_chunks(
     chunks_by_doc = {}
     for chunk in relevant_chunks:
         chunks_by_doc.setdefault(chunk['doc_id'], []).append(chunk)
-
+ 
     for doc_id, chunks in chunks_by_doc.items():
         title = chunks[0]['doc_title']
         context_parts.append(f"\n**Source: {title}**")
@@ -426,9 +440,9 @@ def format_context_from_chunks(
                 section += f" ({', '.join(notes)})"
             section += "]"
             context_parts.append(f"\n{section}\n{text}")
-
+ 
     context = "\n".join(context_parts)
-
+ 
     cited_docs = []
     for doc_id, info in seen_docs.items():
         entry = {
@@ -445,5 +459,6 @@ def format_context_from_chunks(
         if info.get('timestamps'):
             entry['timestamps'] = sorted(info['timestamps'])
         cited_docs.append(entry)
-
+ 
     return context, cited_docs
+ 
